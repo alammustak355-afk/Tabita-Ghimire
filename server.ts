@@ -2751,7 +2751,7 @@ app.patch('/api/membership/rbac', requireAuth, async (req: AuthRequest, res) => 
 // ANDROID APP (KOTLIN / TWA), DIGITAL ASSET LINKS & GOOGLE PLAY COMPLIANCE
 // ---------------------------------------------------------------------------
 async function resolveAndroidPlayConfig(tenantId?: number) {
-  const defaultPackageName = process.env.ANDROID_PACKAGE_NAME || 'com.connectai.crm';
+  const defaultPackageName = process.env.ANDROID_PACKAGE_NAME || 'com.connectai.crm.mobile';
   const defaultSha256 =
     process.env.ANDROID_SHA256_FINGERPRINT ||
     'FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C';
@@ -2863,12 +2863,12 @@ app.get('/twa-manifest.json', async (req, res) => {
 });
 
 // 3. Public Google Play Store Compliant Privacy Policy & Data Safety Page
-const renderPrivacyPolicyHtml = (host: string, supportEmail: string) => `<!DOCTYPE html>
+const renderPrivacyPolicyHtml = (host: string, supportEmail: string, packageName: string) => `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Privacy Policy & Data Safety — ConnectAI CRM (com.connectai.crm)</title>
+  <title>Privacy Policy & Data Safety — ConnectAI CRM (${packageName})</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #0f172a; margin: 0; padding: 24px; line-height: 1.6; }
     .container { max-width: 820px; margin: 0 auto; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 32px; box-shadow: 0 1px 3px rgba(15,23,42,0.06); }
@@ -2883,7 +2883,7 @@ const renderPrivacyPolicyHtml = (host: string, supportEmail: string) => `<!DOCTY
   <div class="container">
     <span class="badge">Google Play Store & GDPR Data Safety Compliant</span>
     <h1>Privacy Policy — ConnectAI CRM</h1>
-    <p><strong>Effective Date:</strong> October 19, 2026 &nbsp;|&nbsp; <strong>Android Package ID:</strong> <code>com.connectai.crm</code> &nbsp;|&nbsp; <strong>Domain:</strong> <code>https://${host}</code></p>
+    <p><strong>Effective Date:</strong> October 19, 2026 &nbsp;|&nbsp; <strong>Android Application ID:</strong> <code>${packageName}</code> &nbsp;|&nbsp; <strong>Domain:</strong> <code>https://${host}</code></p>
 
     <h2>1. Overview & Purpose</h2>
     <p>ConnectAI CRM ("the Application") is an enterprise B2B Customer Relationship Management (CRM), international recruitment pipeline, and omnichannel customer communication platform. This Privacy Policy explains how data is collected, stored, processed, and protected across the ConnectAI CRM Android application and web platform.</p>
@@ -2905,7 +2905,7 @@ const renderPrivacyPolicyHtml = (host: string, supportEmail: string) => `<!DOCTY
 
     <h2>4. Data Security, Encryption & Android Permissions</h2>
     <ul>
-      <li><strong>Encryption in Transit:</strong> 100% of network traffic between the Android app (<code>com.connectai.crm</code>) and backend servers uses TLS/HTTPS (<code>usesCleartextTraffic="false"</code>).</li>
+      <li><strong>Encryption in Transit:</strong> 100% of network traffic between the Android app (<code>${packageName}</code>) and backend servers uses TLS/HTTPS (<code>usesCleartextTraffic="false"</code>).</li>
       <li><strong>Android Device Security:</strong> Session metadata on Android is stored using Android Jetpack Security <code>EncryptedSharedPreferences</code> backed by the hardware Android Keystore (AES-256-GCM).</li>
       <li><strong>Minimal Permissions:</strong> The Android application requests only <code>android.permission.INTERNET</code> and <code>android.permission.ACCESS_NETWORK_STATE</code>. It does not track background location, read personal SMS, or access the device's personal address book without explicit user file selection.</li>
     </ul>
@@ -2920,7 +2920,7 @@ app.get(['/privacy', '/privacy-policy'], async (req, res) => {
   const cfg = await resolveAndroidPlayConfig();
   const host = req.headers.host || 'ais-pre-23awl6srmfqwmf4tftm5ii-46650627537.europe-west2.run.app';
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(renderPrivacyPolicyHtml(host, cfg.supportEmail));
+  res.send(renderPrivacyPolicyHtml(host, cfg.supportEmail, cfg.packageName));
 });
 
 // 4. Authenticated Android & Google Play Configuration Endpoints
@@ -2939,7 +2939,7 @@ app.post('/api/android/config', requireAuth, async (req: AuthRequest, res) => {
     const ctx = await resolveTenantContext(req);
     const tid = ctx.activeTenant.id;
     const {
-      packageName = 'com.connectai.crm',
+      packageName = 'com.connectai.crm.mobile',
       sha256Fingerprint = '',
       versionName = '1.0.0',
       versionCode = 1,
@@ -2948,7 +2948,7 @@ app.post('/api/android/config', requireAuth, async (req: AuthRequest, res) => {
       supportEmail = ctx.user.email,
     } = req.body;
 
-    const cleanPackage = String(packageName).trim() || 'com.connectai.crm';
+    const cleanPackage = String(packageName).trim() || 'com.connectai.crm.mobile';
     const fingerprints = String(sha256Fingerprint)
       .split(',')
       .map((s) => s.trim().toUpperCase())
@@ -3029,20 +3029,52 @@ app.post('/api/android/config', requireAuth, async (req: AuthRequest, res) => {
 });
 
 // 5. Native Kotlin + Jetpack Compose Android Studio Project Files Bundle Endpoint
+const ANDROID_PROJECT_FILE_PATHS = [
+  '.github/workflows/android-release.yml',
+  'android-app/README.md',
+  'android-app/settings.gradle.kts',
+  'android-app/build.gradle.kts',
+  'android-app/gradle.properties',
+  'android-app/gradlew',
+  'android-app/gradlew.bat',
+  'android-app/gradle/wrapper/gradle-wrapper.properties',
+  'android-app/.gitignore',
+  'android-app/app/build.gradle.kts',
+  'android-app/app/proguard-rules.pro',
+  'android-app/app/src/main/AndroidManifest.xml',
+  'android-app/app/src/main/res/values/strings.xml',
+  'android-app/app/src/main/res/drawable/ic_launcher_background.xml',
+  'android-app/app/src/main/res/drawable/ic_launcher_foreground.xml',
+  'android-app/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml',
+  'android-app/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml',
+  'android-app/app/src/main/java/com/connectai/crm/MainActivity.kt',
+  'android-app/app/src/main/java/com/connectai/crm/model/CrmModels.kt',
+  'android-app/app/src/main/java/com/connectai/crm/data/SessionVault.kt',
+  'android-app/app/src/main/java/com/connectai/crm/network/ConnectAiApiClient.kt',
+  'android-app/app/src/main/java/com/connectai/crm/ui/theme/Theme.kt',
+  'android-app/app/src/main/java/com/connectai/crm/ui/screens/CoreCrmScreens.kt',
+  'android-app/app/src/main/java/com/connectai/crm/ui/screens/OperationsAndAdminScreens.kt',
+];
+
+// Direct Download Endpoint for the Complete Android Project ZIP Archive
+app.get(['/api/android/download-zip', '/connectai-crm-android.zip'], (_req, res) => {
+  try {
+    const zipFilePath = path.join(process.cwd(), 'public', 'connectai-crm-android.zip');
+    if (!fs.existsSync(zipFilePath)) {
+      return res.status(404).json({ error: 'Android project ZIP archive not found' });
+    }
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="connectai-crm-android.zip"');
+    res.sendFile(zipFilePath);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to download Android ZIP archive' });
+  }
+});
+
 app.get('/api/android/project-files', requireAuth, async (_req: AuthRequest, res) => {
   try {
-    const filesToRead = [
-      'android-app/settings.gradle.kts',
-      'android-app/build.gradle.kts',
-      'android-app/app/build.gradle.kts',
-      'android-app/app/proguard-rules.pro',
-      'android-app/app/src/main/AndroidManifest.xml',
-      'android-app/app/src/main/java/com/connectai/crm/MainActivity.kt',
-      '.github/workflows/android-release.yml',
-    ];
-
     const files: Record<string, string> = {};
-    for (const relPath of filesToRead) {
+    for (const relPath of ANDROID_PROJECT_FILE_PATHS) {
       const fullPath = path.join(process.cwd(), relPath);
       if (fs.existsSync(fullPath)) {
         files[relPath] = fs.readFileSync(fullPath, 'utf-8');
@@ -3050,15 +3082,111 @@ app.get('/api/android/project-files', requireAuth, async (_req: AuthRequest, res
     }
 
     res.json({
-      packageName: 'com.connectai.crm',
-      architecture: 'Kotlin 2.0 + Jetpack Compose (Material 3) + EncryptedSharedPreferences + Secure HTTPS CRM Client',
+      packageName: 'com.connectai.crm.mobile',
+      namespace: 'com.connectai.crm',
+      architecture: 'Kotlin 2.0 + Jetpack Compose (Material 3) + EncryptedSharedPreferences + Coroutines REST Client',
       minSdk: 26,
       targetSdk: 35,
       compileSdk: 35,
+      zipDownloadUrl: '/api/android/download-zip',
       files,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to load Android project files' });
+  }
+});
+
+// 6. Stateless Mobile Browser Helper: Push /android-app + GitHub Workflow Directly to User's Private GitHub Repo
+app.post('/api/android/github-push', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = await resolveTenantContext(req);
+    const { repoFullName = '', githubToken = '', branch = 'main' } = req.body;
+    const cleanRepo = String(repoFullName).trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
+    const token = String(githubToken).trim();
+    const targetBranch = String(branch).trim() || 'main';
+
+    if (!cleanRepo.includes('/') || !token) {
+      return res.status(400).json({
+        error: 'Please provide your GitHub repository (e.g. username/connectai-crm-android) and a GitHub Personal Access Token with Contents + Workflows write permissions.',
+      });
+    }
+
+    const ghHeaders: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${token}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'ConnectAI-CRM-Android-Exporter',
+      'Content-Type': 'application/json',
+    };
+
+    const allGitHubPaths = [
+      ...ANDROID_PROJECT_FILE_PATHS,
+      'android-app/gradle/wrapper/gradle-wrapper.jar',
+    ];
+
+    const pushedFiles: string[] = [];
+    for (const relPath of allGitHubPaths) {
+      const fullPath = path.join(process.cwd(), relPath);
+      if (!fs.existsSync(fullPath)) continue;
+      const contentBase64 = fs.readFileSync(fullPath).toString('base64');
+
+      // Check if file already exists to include its sha
+      let existingSha: string | undefined;
+      const getRes = await fetch(
+        `https://api.github.com/repos/${cleanRepo}/contents/${relPath}?ref=${encodeURIComponent(targetBranch)}`,
+        { method: 'GET', headers: ghHeaders }
+      );
+      if (getRes.ok) {
+        const existingJson: any = await getRes.json();
+        if (existingJson && existingJson.sha) {
+          existingSha = existingJson.sha;
+        }
+      }
+
+      const putBody: Record<string, any> = {
+        message: `Sync ${relPath} for ConnectAI CRM Android Gradle build`,
+        content: contentBase64,
+        branch: targetBranch,
+      };
+      if (existingSha) {
+        putBody.sha = existingSha;
+      }
+
+      const putRes = await fetch(
+        `https://api.github.com/repos/${cleanRepo}/contents/${relPath}`,
+        {
+          method: 'PUT',
+          headers: ghHeaders,
+          body: JSON.stringify(putBody),
+        }
+      );
+
+      if (!putRes.ok) {
+        const errText = await putRes.text();
+        throw new Error(`GitHub API error on ${relPath} (HTTP ${putRes.status}): ${errText}`);
+      }
+      pushedFiles.push(relPath);
+    }
+
+    await logAudit(
+      ctx.activeTenant.id,
+      ctx.user.uid,
+      ctx.user.name,
+      'ANDROID_GITHUB_REPO_SYNCED',
+      'android_app',
+      cleanRepo,
+      `Synced ${pushedFiles.length} Android Gradle & GitHub Actions workflow files to ${cleanRepo} (${targetBranch}) without storing GitHub token.`
+    );
+
+    res.json({
+      ok: true,
+      repo: cleanRepo,
+      branch: targetBranch,
+      pushedCount: pushedFiles.length,
+      actionsUrl: `https://github.com/${cleanRepo}/actions`,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to push files to GitHub repository' });
   }
 });
 

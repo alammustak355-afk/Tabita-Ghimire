@@ -1,18 +1,13 @@
-name: Build ConnectAI CRM Android APK & Signed Play Store AAB
+name: Build ConnectAI CRM Android APK & Play Store AAB
 
 on:
   workflow_dispatch:
   push:
     branches: [ main, master ]
-    paths:
-      - 'android-app/**'
 
 jobs:
   build-android:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: android-app
 
     steps:
       - name: Checkout Repository
@@ -24,32 +19,61 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK (API 35)
-        uses: android-actions/setup-android@v3
+      - name: Accept Android SDK Licenses & Install API 35 SDK
+        run: |
+          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(which sdkmanager)"
+          fi
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.10.2'
+      - name: Prepare Release Keystore (Optional GitHub Secrets)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/connectai-release.jks"
+            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/connectai-release.jks" >> "$GITHUB_ENV"
+            echo "Release keystore decoded from ANDROID_KEYSTORE_BASE64 secret."
+          else
+            echo "No ANDROID_KEYSTORE_BASE64 secret configured; building unsigned release AAB."
+          fi
 
       - name: Build Debug APK for Direct Phone Testing
-        run: gradle assembleDebug --stacktrace
+        run: |
+          if [ -f "android-app/gradlew" ]; then
+            cd android-app
+          fi
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace
 
       - name: Build Release Android App Bundle (.aab) for Google Play Console
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: gradle bundleRelease --stacktrace
+        run: |
+          if [ -f "android-app/gradlew" ]; then
+            cd android-app
+          fi
+          chmod +x gradlew
+          ./gradlew bundleRelease --stacktrace
 
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: connectai-crm-debug-apk
-          path: android-app/app/build/outputs/apk/debug/*.apk
+          path: |
+            android-app/app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
 
       - name: Upload Release Play Store AAB Artifact
         uses: actions/upload-artifact@v4
         with:
           name: connectai-crm-release-aab
-          path: android-app/app/build/outputs/bundle/release/*.aab
+          path: |
+            android-app/app/build/outputs/bundle/release/*.aab
+            app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
