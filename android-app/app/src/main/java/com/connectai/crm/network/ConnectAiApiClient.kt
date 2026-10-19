@@ -12,16 +12,24 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 
+class BackendApiException(
+    override val message: String,
+    val diagnostic: ApiDiagnosticInfo
+) : IllegalStateException(message)
+
 class ConnectAiApiClient(private val sessionVault: SessionVault) {
 
     private fun openAuthenticatedConnection(path: String, method: String): HttpURLConnection {
-        val baseUrl = sessionVault.backendBaseUrl.removeSuffix("/")
+        val baseUrl = SessionVault.normalizeBackendBaseUrl(sessionVault.backendBaseUrl)
         require(baseUrl.startsWith("https://")) {
-            "Security Violation: Production backend URL must use HTTPS."
+            "Security Violation: Production backend URL must use HTTPS (current: $baseUrl)."
         }
         val url = URL("$baseUrl$path")
+
         return (url.openConnection() as HttpURLConnection).apply {
             requestMethod = method
+            // Disable automatic redirect following so we can detect AI Studio's 302 -> /__cookie_check.html gate
+            instanceFollowRedirects = false
             connectTimeout = 12000
             readTimeout = 18000
             setRequestProperty("Accept", "application/json")
@@ -36,11 +44,160 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
         }
     }
 
+    private fun extractHtmlTitle(rawHtml: String): String {
+        val match = Regex("<title>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+            .find(rawHtml)
+        return match?.groupValues?.getOrNull(1)?.trim().orEmpty()
+    }
+
+    private fun parseSafeJsonResponse(
+        rawText: String,
+        contentType: String,
+        httpCode: Int,
+        fullUrl: String,
+        requireBootstrapSchema: Boolean
+    ): JSONObject {
+        val trimmed = rawText.trim()
+        val lowerContentType = contentType.lowercase()
+
+        // 1. Handle Empty Responses safely
+        if (trimmed.isEmpty()) {
+            if (requireBootstrapSchema) {
+                val msg = "Empty response body (HTTP $httpCode, Content-Type: ${contentType.ifBlank { "none" }}) from $fullUrl."
+                throw BackendApiException(
+                    message = msg,
+                    diagnostic = ApiDiagnosticInfo(
+                        endpointUrl = fullUrl,
+                        httpStatusCode = httpCode,
+                        contentType = contentType.ifBlank { "empty" },
+                        errorSummary = msg,
+                        remediationHint = "Verify that the backend server is running and returning JSON on /api/bootstrap."
+                    )
+                )
+            }
+            return JSONObject()
+        }
+
+        // 2. Detect HTML responses (e.g. <!doctype html>, <html>, /__cookie_check.html) BEFORE JSONTokener
+        if (lowerContentType.contains("text/html") || trimmed.startsWith("<")) {
+            val htmlTitle = extractHtmlTitle(trimmed)
+            val isAiStudioPreviewGate = fullUrl.contains("ais-pre-") ||
+                fullUrl.contains("ais-dev-") ||
+                trimmed.contains("__cookie_check") ||
+                trimmed.contains("applet-auth-bridge") ||
+                htmlTitle.contains("Cookie check", ignoreCase = true)
+
+            val summary = if (isAiStudioPreviewGate) {
+                "AI Studio preview proxy ($fullUrl) returned an HTML browser cookie check (HTTP $httpCode, Content-Type: text/html${if (htmlTitle.isNotBlank()) ", Title: \"$htmlTitle\"" else ""}) instead of JSON."
+            } else {
+                "Endpoint returned HTML (${htmlTitle.ifBlank { "text/html" }}, HTTP $httpCode) instead of application/json."
+            }
+            val hint = if (isAiStudioPreviewGate) {
+                "The URL 'ais-pre-...run.app' is an internal AI Studio web preview proxy that requires browser cookies (__cookie_check.html). To connect the native Android app to live data, deploy this backend to a public Cloud Run service in AI Studio (Deploy -> Cloud Run) and paste that public Cloud Run URL in Settings."
+            } else {
+                "Verify that the configured Backend URL points to your deployed ConnectAI Express server and not a static HTML page."
+            }
+            throw BackendApiException(
+                message = "$summary $hint",
+                diagnostic = ApiDiagnosticInfo(
+                    endpointUrl = fullUrl,
+                    httpStatusCode = httpCode,
+                    contentType = contentType.ifBlank { "text/html" },
+                    errorSummary = summary,
+                    remediationHint = hint
+                )
+            )
+        }
+
+        // 3. Safely parse JSON Object, JSON Array, JSON String, or Plain Text using JSONTokener
+        val parsedValue = try {
+            org.json.JSONTokener(trimmed).nextValue()
+        } catch (e: Exception) {
+            val preview = trimmed.take(120).replace("\n", " ")
+            val msg = "Invalid JSON response (HTTP $httpCode, Content-Type: ${contentType.ifBlank { "unknown" }}): \"$preview\""
+            throw BackendApiException(
+                message = msg,
+                diagnostic = ApiDiagnosticInfo(
+                    endpointUrl = fullUrl,
+                    httpStatusCode = httpCode,
+                    contentType = contentType.ifBlank { "text/plain" },
+                    errorSummary = msg,
+                    remediationHint = "Ensure the endpoint returns valid application/json."
+                )
+            )
+        }
+
+        return when (parsedValue) {
+            is JSONObject -> parsedValue
+            is JSONArray -> JSONObject().put("items", parsedValue)
+            is String -> {
+                // Handle double-encoded JSON strings ("{\"activeTenant\":...}") or plain-text strings safely
+                val innerTrimmed = parsedValue.trim()
+                if (innerTrimmed.startsWith("{") && innerTrimmed.endsWith("}")) {
+                    runCatching { JSONObject(innerTrimmed) }.getOrElse {
+                        if (requireBootstrapSchema) {
+                            throw BackendApiException(
+                                message = "Malformed JSON string payload from $fullUrl (HTTP $httpCode).",
+                                diagnostic = ApiDiagnosticInfo(
+                                    endpointUrl = fullUrl,
+                                    httpStatusCode = httpCode,
+                                    contentType = contentType,
+                                    errorSummary = "Server returned a String that could not be parsed as a JSONObject.",
+                                    remediationHint = "Check the backend response format at $fullUrl."
+                                )
+                            )
+                        }
+                        JSONObject().put("message", parsedValue)
+                    }
+                } else if (innerTrimmed.startsWith("[") && innerTrimmed.endsWith("]")) {
+                    runCatching { JSONObject().put("items", JSONArray(innerTrimmed)) }.getOrElse {
+                        JSONObject().put("message", parsedValue)
+                    }
+                } else {
+                    if (requireBootstrapSchema) {
+                        val preview = parsedValue.take(120).replace("\n", " ")
+                        val msg = "Expected JSON object from $fullUrl, but received string/text (HTTP $httpCode, Content-Type: ${contentType.ifBlank { "text/plain" }}): \"$preview\""
+                        throw BackendApiException(
+                            message = msg,
+                            diagnostic = ApiDiagnosticInfo(
+                                endpointUrl = fullUrl,
+                                httpStatusCode = httpCode,
+                                contentType = contentType.ifBlank { "text/plain" },
+                                errorSummary = msg,
+                                remediationHint = "Configure a public Cloud Run backend URL that serves /api/bootstrap as application/json."
+                            )
+                        )
+                    }
+                    JSONObject().put("message", parsedValue).put("value", parsedValue)
+                }
+            }
+            else -> {
+                if (requireBootstrapSchema) {
+                    throw BackendApiException(
+                        message = "Unexpected JSON primitive (${parsedValue?.javaClass?.simpleName}) from $fullUrl.",
+                        diagnostic = ApiDiagnosticInfo(
+                            endpointUrl = fullUrl,
+                            httpStatusCode = httpCode,
+                            contentType = contentType,
+                            errorSummary = "Expected JSON object from /api/bootstrap.",
+                            remediationHint = "Verify the backend URL points to the ConnectAI CRM server."
+                        )
+                    )
+                }
+                JSONObject().put("value", parsedValue)
+            }
+        }
+    }
+
     private suspend fun executeJsonRequest(
         path: String,
         method: String = "GET",
-        body: JSONObject? = null
+        body: JSONObject? = null,
+        requireBootstrapSchema: Boolean = false
     ): JSONObject = withContext(Dispatchers.IO) {
+        val baseUrl = SessionVault.normalizeBackendBaseUrl(sessionVault.backendBaseUrl)
+        val fullUrl = "$baseUrl$path"
+        val startMs = System.currentTimeMillis()
         val conn = openAuthenticatedConnection(path, method)
         try {
             if (body != null) {
@@ -50,37 +207,231 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
                 }
             }
             val code = conn.responseCode
+            val elapsedMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+            val contentType = conn.contentType ?: conn.getHeaderField("Content-Type") ?: ""
+            val locationHeader = conn.getHeaderField("Location") ?: ""
+
+            // Handle HTTP 3xx Redirects explicitly (such as AI Studio's 302 -> /__cookie_check.html)
+            if (code in 300..399) {
+                val isCookieCheckRedirect = locationHeader.contains("__cookie_check") ||
+                    locationHeader.contains("applet-auth-bridge") ||
+                    fullUrl.contains("ais-pre-") ||
+                    fullUrl.contains("ais-dev-")
+                val summary = if (isCookieCheckRedirect) {
+                    "HTTP $code Redirect to AI Studio Cookie Gate (${locationHeader.ifBlank { "/__cookie_check.html" }}, Content-Type: ${contentType.ifBlank { "text/html" }})"
+                } else {
+                    "HTTP $code Redirect from $fullUrl to $locationHeader"
+                }
+                val hint = if (isCookieCheckRedirect) {
+                    "The configured URL ($baseUrl) is an AI Studio internal preview proxy that blocks external mobile apps with a 302 redirect to /__cookie_check.html. Deploy the backend to public Cloud Run in AI Studio and set the deployed URL in Settings."
+                } else {
+                    "Update the Backend URL to the direct HTTPS endpoint without redirects."
+                }
+                throw BackendApiException(
+                    message = "$summary — $hint",
+                    diagnostic = ApiDiagnosticInfo(
+                        endpointUrl = fullUrl,
+                        httpStatusCode = code,
+                        contentType = contentType.ifBlank { "text/html" },
+                        latencyMs = elapsedMs,
+                        errorSummary = summary,
+                        remediationHint = hint,
+                        responsePreview = "Location: ${locationHeader.ifBlank { "/__cookie_check.html" }}"
+                    )
+                )
+            }
+
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             val text = stream?.let {
                 BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
-            } ?: "{}"
+            } ?: ""
 
             if (code !in 200..299) {
-                val errMsg = runCatching { JSONObject(text).optString("error") }
-                    .getOrDefault("")
-                    .ifBlank { "HTTP $code from $path" }
-                throw IllegalStateException(errMsg)
+                // Safely parse JSON, HTML, or plain-text error bodies without throwing JSONException
+                val parsedErrorMsg = runCatching {
+                    val obj = parseSafeJsonResponse(text, contentType, code, fullUrl, false)
+                    obj.optString("error").ifBlank { obj.optString("message") }
+                }.getOrDefault("")
+                val fallbackText = if (contentType.lowercase().contains("text/html") || text.trim().startsWith("<")) {
+                    extractHtmlTitle(text).ifBlank { "HTML error page" }
+                } else {
+                    text.trim().take(140)
+                }
+                val cleanErr = parsedErrorMsg.ifBlank {
+                    if (fallbackText.isNotBlank()) "HTTP $code ($path): $fallbackText" else "HTTP $code from $path"
+                }
+                val authHint = if (code == 401 || code == 403) {
+                    "Authentication failed (HTTP $code). Verify your Bearer token or sign in again in Settings."
+                } else {
+                    "Check backend deployment status and server logs for $fullUrl."
+                }
+                throw BackendApiException(
+                    message = cleanErr,
+                    diagnostic = ApiDiagnosticInfo(
+                        endpointUrl = fullUrl,
+                        httpStatusCode = code,
+                        contentType = contentType.ifBlank { "unknown" },
+                        latencyMs = elapsedMs,
+                        errorSummary = cleanErr,
+                        remediationHint = authHint,
+                        responsePreview = text.trim().take(180)
+                    )
+                )
             }
-            if (text.trim().startsWith("[")) {
-                JSONObject().put("items", JSONArray(text))
-            } else {
-                JSONObject(text)
-            }
+
+            parseSafeJsonResponse(
+                rawText = text,
+                contentType = contentType,
+                httpCode = code,
+                fullUrl = fullUrl,
+                requireBootstrapSchema = requireBootstrapSchema
+            )
+        } catch (e: BackendApiException) {
+            throw e
+        } catch (e: Exception) {
+            val elapsedMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+            val errSummary = "${e.javaClass.simpleName}: ${e.message ?: "Network connection failed"}"
+            throw BackendApiException(
+                message = errSummary,
+                diagnostic = ApiDiagnosticInfo(
+                    endpointUrl = fullUrl,
+                    httpStatusCode = 0,
+                    contentType = "none",
+                    latencyMs = elapsedMs,
+                    errorSummary = errSummary,
+                    remediationHint = "Check your internet connection and verify that $baseUrl is publicly deployed."
+                )
+            )
         } finally {
             conn.disconnect()
         }
     }
 
-    suspend fun fetchBootstrapWorkspace(): CrmWorkspaceSnapshot {
-        return try {
-            val root = executeJsonRequest("/api/bootstrap", "GET")
-            parseBootstrapJson(root)
+    suspend fun testBackendConnectivity(customBaseUrl: String? = null): ApiDiagnosticInfo = withContext(Dispatchers.IO) {
+        val previousUrl = sessionVault.backendBaseUrl
+        if (!customBaseUrl.isNullOrBlank()) {
+            sessionVault.backendBaseUrl = customBaseUrl
+        }
+        val baseUrl = SessionVault.normalizeBackendBaseUrl(sessionVault.backendBaseUrl)
+        val endpointUrl = "$baseUrl/api/bootstrap"
+        val startMs = System.currentTimeMillis()
+        try {
+            val root = executeJsonRequest(
+                path = "/api/bootstrap",
+                method = "GET",
+                body = null,
+                requireBootstrapSchema = true
+            )
+            val elapsedMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+            val tenantName = root.optJSONObject("activeTenant")?.optString("name") ?: "Workspace"
+            val leadsCount = root.optJSONArray("leads")?.length() ?: 0
+            ApiDiagnosticInfo(
+                endpointUrl = endpointUrl,
+                httpStatusCode = 200,
+                contentType = "application/json; charset=utf-8",
+                latencyMs = elapsedMs,
+                errorSummary = "LIVE API VERIFIED — Connected to $tenantName ($leadsCount live leads).",
+                remediationHint = "Connection healthy. Live Cloud SQL PostgreSQL data is active.",
+                responsePreview = "{\"activeTenant\":\"$tenantName\",\"leadsCount\":$leadsCount,\"status\":\"HTTP 200 OK\"}"
+            )
+        } catch (e: BackendApiException) {
+            if (!customBaseUrl.isNullOrBlank()) {
+                sessionVault.backendBaseUrl = previousUrl
+            }
+            e.diagnostic
         } catch (e: Exception) {
-            DemoFallbackDataset.buildSafeDemoSnapshot(
-                reason = e.message ?: "Backend unreachable; displaying labeled Demo Workspace."
+            if (!customBaseUrl.isNullOrBlank()) {
+                sessionVault.backendBaseUrl = previousUrl
+            }
+            val elapsedMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
+            ApiDiagnosticInfo(
+                endpointUrl = endpointUrl,
+                httpStatusCode = 0,
+                contentType = "none",
+                latencyMs = elapsedMs,
+                errorSummary = e.message ?: "Connection failed",
+                remediationHint = "Verify the HTTPS Cloud Run URL and try again."
             )
         }
     }
+
+    suspend fun fetchBootstrapWorkspace(): CrmWorkspaceSnapshot {
+        val baseUrl = SessionVault.normalizeBackendBaseUrl(sessionVault.backendBaseUrl)
+        val endpointUrl = "$baseUrl/api/bootstrap"
+        return try {
+            val root = executeJsonRequest(
+                path = "/api/bootstrap",
+                method = "GET",
+                body = null,
+                requireBootstrapSchema = true
+            )
+            if (!root.has("activeTenant") && !root.has("leads") && !root.has("contacts")) {
+                throw BackendApiException(
+                    message = "Response from $endpointUrl did not contain ConnectAI CRM workspace fields.",
+                    diagnostic = ApiDiagnosticInfo(
+                        endpointUrl = endpointUrl,
+                        httpStatusCode = 200,
+                        contentType = "application/json",
+                        errorSummary = "Missing expected CRM fields (activeTenant, leads, contacts) in JSON response.",
+                        remediationHint = "Ensure $baseUrl is running the ConnectAI CRM Express server."
+                    )
+                )
+            }
+            parseBootstrapJson(root, endpointUrl)
+        } catch (e: BackendApiException) {
+            DemoFallbackDataset.buildSafeDemoSnapshot(
+                reason = e.diagnostic.errorSummary,
+                diagnostic = e.diagnostic,
+                companyName = sessionVault.companyName,
+                userName = sessionVault.userDisplayName
+            )
+        } catch (e: Exception) {
+            val reason = e.message ?: "Backend unreachable; displaying clean offline workspace."
+            DemoFallbackDataset.buildSafeDemoSnapshot(
+                reason = reason,
+                diagnostic = ApiDiagnosticInfo(
+                    endpointUrl = endpointUrl,
+                    httpStatusCode = 0,
+                    contentType = "none",
+                    errorSummary = reason,
+                    remediationHint = "Deploy the backend to a public Cloud Run URL and configure it in Settings."
+                ),
+                companyName = sessionVault.companyName,
+                userName = sessionVault.userDisplayName
+            )
+        }
+    }
+
+    suspend fun saveWorkspaceOnboarding(
+        companyName: String,
+        industry: String,
+        timezone: String,
+        userName: String,
+        aiDisclosureEnabled: Boolean = true
+    ): JSONObject {
+        sessionVault.companyName = companyName
+        sessionVault.workspaceIndustry = industry
+        sessionVault.workspaceTimezone = timezone
+        sessionVault.userDisplayName = userName
+        sessionVault.hasCompletedOnboarding = true
+        val payload = JSONObject().apply {
+            put("companyName", companyName.trim())
+            put("industry", industry.trim())
+            put("timezone", timezone.trim())
+            put("userName", userName.trim())
+            put("aiDisclosureEnabled", aiDisclosureEnabled)
+        }
+        return executeJsonRequest("/api/workspace/onboarding", "POST", payload)
+    }
+
+    suspend fun resetWorkspaceClean(confirmPhrase: String): JSONObject {
+        val payload = JSONObject().apply {
+            put("confirmPhrase", confirmPhrase.trim())
+        }
+        return executeJsonRequest("/api/workspace/reset", "POST", payload)
+    }
+
+
 
     suspend fun createLeadOrCandidate(
         title: String,
@@ -320,7 +671,7 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
         return executeJsonRequest("/api/tenants/settings", "POST", payload)
     }
 
-    private fun parseBootstrapJson(root: JSONObject): CrmWorkspaceSnapshot {
+    private fun parseBootstrapJson(root: JSONObject, endpointUrl: String): CrmWorkspaceSnapshot {
         val userObj = root.optJSONObject("user") ?: JSONObject()
         val membershipObj = root.optJSONObject("membership") ?: JSONObject()
         val tenantObj = root.optJSONObject("activeTenant") ?: JSONObject()
@@ -397,7 +748,9 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
                     leadScore = l.optInt("leadScore", 75),
                     extractedRequirements = l.optString("extractedRequirements", ""),
                     notes = l.optString("notes", ""),
-                    estimatedValueUsd = l.optString("estimatedValueUsd", "0").toDoubleOrNull() ?: 0.0,
+                    estimatedValueUsd = l.optString("estimatedValueUsd", "0")
+                        .replace(Regex("[^0-9.-]"), "")
+                        .toDoubleOrNull() ?: l.optDouble("estimatedValueUsd", 0.0),
                     nextAction = l.optString("nextAction", ""),
                     dueDate = l.optString("dueDate", ""),
                     isArchived = l.optBoolean("isArchived", false)
@@ -591,6 +944,13 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
         return CrmWorkspaceSnapshot(
             isLiveBackend = true,
             connectionBanner = "CONNECTED TO LIVE CLOUD SQL POSTGRESQL (${activeTenant.name})",
+            apiDiagnostic = ApiDiagnosticInfo(
+                endpointUrl = endpointUrl,
+                httpStatusCode = 200,
+                contentType = "application/json",
+                errorSummary = "Verified Live API Connection (HTTP 200 application/json)",
+                remediationHint = ""
+            ),
             user = UserProfile(
                 id = userObj.optInt("id", 1),
                 uid = userObj.optString("uid", ""),

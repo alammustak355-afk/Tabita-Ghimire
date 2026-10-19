@@ -41,13 +41,50 @@ import {
   subscriptionRecords,
   auditLogs,
 } from './src/db/schema.ts';
-import { getOrCreateUserAndTenant } from './src/db/repository.ts';
-import { requireAuth, AuthRequest } from './src/middleware/auth.ts';
+import {
+  getOrCreateUserAndTenant,
+  initializeCleanTenantStructure,
+  resetTenantWorkspaceToClean,
+} from './src/db/repository.ts';
+import { requireAuth, type AuthRequest } from './src/middleware/auth.ts';
 
 dotenv.config();
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
+
+// Ensure all /api/* requests support Android/mobile clients and return JSON headers
+app.use('/api', (req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Origin, X-Requested-With, Content-Type, Accept, Authorization, x-tenant-slug, x-demo-workspace, x-actor-uid, x-actor-email, x-actor-name'
+  );
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  if (
+    !req.path.startsWith('/android/download-zip') &&
+    !req.path.startsWith('/guide/download-') &&
+    !req.path.startsWith('/webhooks/whatsapp')
+  ) {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  }
+  next();
+});
+
+
+// Public Cloud Run & Android Readiness Health Endpoint
+app.get('/api/health', (_req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: 'connectai-crm-backend',
+    status: 'healthy',
+    databaseConfigured: Boolean(process.env.SQL_HOST),
+    timestamp: new Date().toISOString(),
+  });
+});
 
 // Shared Server-Side Gemini Client with mandatory User-Agent header
 const getGeminiClient = () => {
@@ -201,7 +238,7 @@ app.get('/api/bootstrap', requireAuth, async (req: AuthRequest, res) => {
   }
 });
 
-// Create a new isolated tenant workspace
+// Create a new isolated tenant workspace (starts completely clean with 0 business records)
 app.post('/api/tenants/create', requireAuth, async (req: AuthRequest, res) => {
   try {
     const ctx = await resolveTenantContext(req);
@@ -212,12 +249,12 @@ app.post('/api/tenants/create', requireAuth, async (req: AuthRequest, res) => {
     const created = await db
       .insert(tenants)
       .values({
-        name,
+        name: String(name).trim(),
         slug,
-        industry: industry || 'Enterprise B2B',
+        industry: industry || 'Recruitment & Omnichannel CRM',
         timezone: timezone || 'UTC',
-        plan: 'Growth Pro',
-        isDemoSeeded: true, // Start clean or with minimal defaults
+        plan: 'Starter Workspace',
+        isDemoSeeded: false,
       })
       .returning();
 
@@ -232,17 +269,7 @@ app.post('/api/tenants/create', requireAuth, async (req: AuthRequest, res) => {
       isActive: true,
     });
 
-    await db.insert(subscriptionRecords).values({
-      tenantId: newTenant.id,
-      planName: 'Growth Pro',
-      status: 'active_trial',
-      monthlyPriceUsd: 299,
-      maxWhatsappNumbers: 35,
-      maxStaffSeats: 25,
-      maxMonthlyConversations: 50000,
-      maxVoiceMinutes: 2000,
-      renewalDate: '2026-11-19',
-    });
+    await initializeCleanTenantStructure(newTenant.id, ctx.user.uid, ctx.user.name);
 
     await db
       .update(users)
@@ -256,7 +283,7 @@ app.post('/api/tenants/create', requireAuth, async (req: AuthRequest, res) => {
       'TENANT_CREATED',
       'tenant',
       String(newTenant.id),
-      `Created isolated tenant workspace: ${newTenant.name} (${newTenant.slug})`
+      `Created clean isolated tenant workspace: ${newTenant.name} (${newTenant.slug})`
     );
 
     res.json({ tenant: newTenant });
@@ -265,6 +292,139 @@ app.post('/api/tenants/create', requireAuth, async (req: AuthRequest, res) => {
     res.status(500).json({ error: error.message || 'Failed to create workspace' });
   }
 });
+
+// Save First-Time Onboarding Wizard Configuration (Workspace & Profile Settings)
+app.post('/api/workspace/onboarding', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = await resolveTenantContext(req);
+    const {
+      companyName,
+      industry,
+      timezone,
+      userName,
+      aiDisclosureEnabled,
+      retentionDays,
+    } = req.body || {};
+
+    if (companyName && String(companyName).trim()) {
+      await db
+        .update(tenants)
+        .set({
+          name: String(companyName).trim(),
+          industry: industry ? String(industry).trim() : ctx.activeTenant.industry,
+          timezone: timezone ? String(timezone).trim() : ctx.activeTenant.timezone,
+          aiDisclosureEnabled:
+            typeof aiDisclosureEnabled === 'boolean'
+              ? aiDisclosureEnabled
+              : ctx.activeTenant.aiDisclosureEnabled,
+          retentionDays:
+            typeof retentionDays === 'number' && retentionDays >= 7
+              ? retentionDays
+              : ctx.activeTenant.retentionDays,
+        })
+        .where(eq(tenants.id, ctx.activeTenant.id));
+    }
+
+    if (userName && String(userName).trim()) {
+      await db
+        .update(users)
+        .set({ name: String(userName).trim() })
+        .where(eq(users.id, ctx.user.id));
+    }
+
+    await logAudit(
+      ctx.activeTenant.id,
+      ctx.user.uid,
+      userName ? String(userName).trim() : ctx.user.name,
+      'WORKSPACE_ONBOARDING_SAVED',
+      'tenant',
+      String(ctx.activeTenant.id),
+      `Completed workspace onboarding for ${companyName || ctx.activeTenant.name} (${industry || ctx.activeTenant.industry}, ${timezone || ctx.activeTenant.timezone})`
+    );
+
+    const updatedTenantRows = await db
+      .select()
+      .from(tenants)
+      .where(eq(tenants.id, ctx.activeTenant.id));
+    const updatedUserRows = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, ctx.user.id));
+
+    res.json({
+      ok: true,
+      activeTenant: updatedTenantRows[0] || ctx.activeTenant,
+      user: updatedUserRows[0] || ctx.user,
+    });
+  } catch (error: any) {
+    console.error('Failed to save onboarding configuration:', error);
+    res.status(500).json({ error: error.message || 'Failed to save onboarding settings' });
+  }
+});
+
+// Protected Workspace Reset (Clears only the current tenant's business records after explicit confirmation)
+app.post('/api/workspace/reset', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const ctx = await resolveTenantContext(req);
+    const { confirmPhrase } = req.body || {};
+    if (String(confirmPhrase || '').trim().toUpperCase() !== 'RESET WORKSPACE') {
+      return res.status(400).json({
+        error: 'Confirmation required: Please type "RESET WORKSPACE" to confirm clearing all workspace records.',
+      });
+    }
+
+    await resetTenantWorkspaceToClean(
+      ctx.activeTenant.id,
+      ctx.user.uid,
+      ctx.user.name,
+      `Authorized owner (${ctx.user.email}) confirmed protected workspace reset to 0 records.`
+    );
+
+    res.json({
+      ok: true,
+      message: 'Workspace records cleared. Dashboard counters reset to 0.',
+    });
+  } catch (error: any) {
+    console.error('Failed to reset workspace:', error);
+    res.status(500).json({ error: error.message || 'Failed to reset workspace' });
+  }
+});
+
+// Direct Download Endpoints for ConnectAI CRM User Guide Book (Markdown & PDF)
+app.get(['/api/guide/download-md', '/ConnectAI-CRM-User-Guide.md'], (_req, res) => {
+  try {
+    const mdPath = path.join(process.cwd(), 'USER_GUIDE.md');
+    if (!fs.existsSync(mdPath)) {
+      return res.status(404).json({ error: 'User Guide Markdown file not found' });
+    }
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="ConnectAI-CRM-User-Guide.md"'
+    );
+    res.sendFile(mdPath);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to download User Guide Markdown' });
+  }
+});
+
+app.get(['/api/guide/download-pdf', '/ConnectAI-CRM-User-Guide.pdf'], (_req, res) => {
+  try {
+    const pdfPath = path.join(process.cwd(), 'public', 'ConnectAI-CRM-User-Guide.pdf');
+    if (!fs.existsSync(pdfPath)) {
+      return res.status(404).json({ error: 'User Guide PDF file not found' });
+    }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="ConnectAI-CRM-User-Guide.pdf"'
+    );
+    res.sendFile(pdfPath);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to download User Guide PDF' });
+  }
+});
+
 
 // Verify Cross-Tenant Isolation (Security Proof Endpoint)
 app.post('/api/security/verify-isolation', requireAuth, async (req: AuthRequest, res) => {
@@ -3190,11 +3350,29 @@ app.post('/api/android/github-push', requireAuth, async (req: AuthRequest, res) 
   }
 });
 
+// Ensure unknown /api/* routes always return JSON 404 (never HTML index.html)
+app.all('/api/*', (req, res) => {
+  res.status(404).json({
+    error: `API endpoint not found: ${req.method} ${req.originalUrl}`,
+  });
+});
+
+// Global JSON error handler for /api/* routes
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (req.path.startsWith('/api')) {
+    console.error('Unhandled API error:', err);
+    return res.status(err?.status || 500).json({
+      error: err?.message || 'Internal server error',
+    });
+  }
+  next(err);
+});
+
 // ---------------------------------------------------------------------------
 // VITE DEV MIDDLEWARE / STATIC ASSETS
 // ---------------------------------------------------------------------------
 async function startServer() {
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

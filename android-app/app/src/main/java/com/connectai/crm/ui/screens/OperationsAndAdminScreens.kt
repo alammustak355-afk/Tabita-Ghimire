@@ -760,11 +760,43 @@ fun SettingsSecurityScreen(
                     .border(1.dp, Color(0xFFE2E8F0), RoundedCornerShape(14.dp))
             ) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Production Backend API Endpoint (HTTPS Required)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Production Backend API Endpoint (HTTPS)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        StatusPill(
+                            text = if (snapshot.isLiveBackend) "CONNECTED LIVE" else "DEMO FALLBACK",
+                            color = if (snapshot.isLiveBackend) Emerald600 else Amber600
+                        )
+                    }
+                    if (snapshot.apiDiagnostic.endpointUrl.isNotBlank()) {
+                        Text(
+                            text = "Tested: ${snapshot.apiDiagnostic.endpointUrl} (HTTP ${snapshot.apiDiagnostic.httpStatusCode} · ${snapshot.apiDiagnostic.contentType.ifBlank { "none" }})",
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = Color(0xFF475569)
+                        )
+                    }
+                    if (snapshot.apiDiagnostic.errorSummary.isNotBlank()) {
+                        Text(
+                            text = snapshot.apiDiagnostic.errorSummary,
+                            fontSize = 11.sp,
+                            color = if (snapshot.isLiveBackend) Emerald600 else Rose600
+                        )
+                    }
+                    if (snapshot.apiDiagnostic.remediationHint.isNotBlank()) {
+                        Text(
+                            text = snapshot.apiDiagnostic.remediationHint,
+                            fontSize = 11.sp,
+                            color = Color(0xFF92400E)
+                        )
+                    }
                     OutlinedTextField(
                         value = editableUrl,
                         onValueChange = { editableUrl = it },
-                        label = { Text("Cloud Run / Express Backend URL") },
+                        label = { Text("Public Cloud Run / Express Backend URL") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -773,7 +805,7 @@ fun SettingsSecurityScreen(
                             onClick = { onUpdateBackendUrl(editableUrl) },
                             colors = ButtonDefaults.buttonColors(containerColor = Indigo600)
                         ) {
-                            Text("Save & Reconnect")
+                            Text("Save & Retry Live API")
                         }
                         OutlinedButton(onClick = onSignOut) {
                             Text("Sign Out Session", color = Rose600)

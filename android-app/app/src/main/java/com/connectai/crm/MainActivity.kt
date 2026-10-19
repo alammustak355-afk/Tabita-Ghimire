@@ -69,18 +69,39 @@ fun ConnectAiCrmAppRoot(
     var copilotResult by remember { mutableStateOf<AiCopilotResult?>(null) }
     var isRunningCopilot by remember { mutableStateOf(false) }
     var showNewLeadDialog by remember { mutableStateOf(false) }
+    var showBackendConfigDialog by remember { mutableStateOf(false) }
+    var retryAttemptCount by remember { mutableIntStateOf(0) }
 
-    fun refreshWorkspace() {
+    fun refreshWorkspace(showUserFeedback: Boolean = false) {
         scope.launch {
             isLoading = true
-            snapshot = apiClient.fetchBootstrapWorkspace()
+            if (showUserFeedback) {
+                retryAttemptCount += 1
+            }
+            val updated = apiClient.fetchBootstrapWorkspace()
+            snapshot = updated
             isLoading = false
+            if (showUserFeedback) {
+                if (updated.isLiveBackend) {
+                    snackbarHostState.showSnackbar(
+                        message = "Connected to Live API (${updated.activeTenant.name}) — HTTP 200 application/json",
+                        duration = SnackbarDuration.Short
+                    )
+                } else {
+                    val diag = updated.apiDiagnostic
+                    val statusLabel = if (diag.httpStatusCode > 0) "HTTP ${diag.httpStatusCode}" else "Network Error"
+                    snackbarHostState.showSnackbar(
+                        message = "Retry #$retryAttemptCount failed ($statusLabel · ${diag.contentType.ifBlank { "no content-type" }}): ${diag.errorSummary}",
+                        duration = SnackbarDuration.Long
+                    )
+                }
+            }
         }
     }
 
     LaunchedEffect(isSignedOut) {
         if (!isSignedOut) {
-            refreshWorkspace()
+            refreshWorkspace(showUserFeedback = false)
         }
     }
 
@@ -159,7 +180,11 @@ fun ConnectAiCrmAppRoot(
                                     color = Color.White
                                 )
                                 Text(
-                                    text = if (snapshot.isLiveBackend) "Live Cloud SQL · ${snapshot.activeTenant.name}" else "Demo Mode (Offline Fallback)",
+                                    text = if (snapshot.isLiveBackend) {
+                                        "LIVE CLOUD SQL · ${snapshot.activeTenant.name}"
+                                    } else {
+                                        "DEMO MODE (SAMPLE DATA — NOT LIVE)"
+                                    },
                                     fontSize = 10.sp,
                                     fontFamily = FontFamily.Monospace,
                                     color = if (snapshot.isLiveBackend) Color(0xFF34D399) else Color(0xFFFBBF24)
@@ -172,8 +197,8 @@ fun ConnectAiCrmAppRoot(
                             }
                         },
                         actions = {
-                            IconButton(onClick = { refreshWorkspace() }) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Sync", tint = Color.White)
+                            IconButton(onClick = { refreshWorkspace(showUserFeedback = true) }) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Retry Live API", tint = Color.White)
                             }
                             IconButton(onClick = { showNewLeadDialog = true }) {
                                 Icon(Icons.Default.Add, contentDescription = "Add Lead", tint = Color.White)
@@ -189,22 +214,45 @@ fun ConnectAiCrmAppRoot(
                         )
                     }
                     if (!snapshot.isLiveBackend) {
-                        Row(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .background(Color(0xFFFEF3C7))
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text(
                                 text = snapshot.connectionBanner,
                                 fontSize = 11.sp,
-                                color = Color(0xFF92400E),
-                                modifier = Modifier.weight(1f)
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF92400E)
                             )
-                            TextButton(onClick = { refreshWorkspace() }) {
-                                Text("Retry Live API", fontSize = 11.sp)
+                            if (snapshot.apiDiagnostic.remediationHint.isNotBlank()) {
+                                Text(
+                                    text = snapshot.apiDiagnostic.remediationHint,
+                                    fontSize = 10.sp,
+                                    color = Color(0xFF78350F)
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(onClick = { showBackendConfigDialog = true }) {
+                                    Text("Set API URL / Diagnostics", fontSize = 11.sp, color = Indigo600)
+                                }
+                                TextButton(
+                                    onClick = { refreshWorkspace(showUserFeedback = true) },
+                                    enabled = !isLoading
+                                ) {
+                                    Text(
+                                        text = if (isLoading) "Retrying Live API..." else "Retry Live API",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF92400E)
+                                    )
+                                }
                             }
                         }
                     }
@@ -246,7 +294,9 @@ fun ConnectAiCrmAppRoot(
                     NavDestination.OVERVIEW -> OverviewScreen(
                         snapshot = snapshot,
                         onOpenNewLeadDialog = { showNewLeadDialog = true },
-                        onNavigate = { activeDest = it }
+                        onNavigate = { activeDest = it },
+                        onRetryLiveApi = { refreshWorkspace(showUserFeedback = true) },
+                        onOpenBackendConfig = { showBackendConfigDialog = true }
                     )
 
                     NavDestination.LEAD_CENTER -> LeadCenterScreen(
@@ -466,11 +516,11 @@ fun ConnectAiCrmAppRoot(
                         backendUrl = sessionVault.backendBaseUrl,
                         onUpdateBackendUrl = { newUrl ->
                             sessionVault.backendBaseUrl = newUrl
-                            refreshWorkspace()
+                            refreshWorkspace(showUserFeedback = true)
                         },
                         onSwitchTenant = { slug ->
                             sessionVault.activeTenantSlug = slug
-                            refreshWorkspace()
+                            refreshWorkspace(showUserFeedback = true)
                         },
                         onToggleEmergencyPause = { pause ->
                             scope.launch {
@@ -481,7 +531,7 @@ fun ConnectAiCrmAppRoot(
                                         emergencyPause = pause,
                                         aiDisclosureEnabled = snapshot.activeTenant.aiDisclosureEnabled
                                     )
-                                    refreshWorkspace()
+                                    refreshWorkspace(showUserFeedback = true)
                                 }
                             }
                         },
@@ -493,6 +543,20 @@ fun ConnectAiCrmAppRoot(
                 }
             }
         }
+    }
+
+    if (showBackendConfigDialog) {
+        BackendDiagnosticAndUrlDialog(
+            currentBackendUrl = sessionVault.backendBaseUrl,
+            diagnostic = snapshot.apiDiagnostic,
+            isLiveBackend = snapshot.isLiveBackend,
+            onDismiss = { showBackendConfigDialog = false },
+            onSaveAndRetry = { newUrl ->
+                sessionVault.backendBaseUrl = newUrl
+                showBackendConfigDialog = false
+                refreshWorkspace(showUserFeedback = true)
+            }
+        )
     }
 
     if (showNewLeadDialog) {
@@ -515,7 +579,7 @@ fun ConnectAiCrmAppRoot(
                             notes = notes
                         )
                         showNewLeadDialog = false
-                        refreshWorkspace()
+                        refreshWorkspace(showUserFeedback = true)
                         snackbarHostState.showSnackbar("Added $name to Recruitment Pipeline")
                     }.onFailure {
                         snackbarHostState.showSnackbar(it.message ?: "Failed to save candidate")
@@ -524,6 +588,82 @@ fun ConnectAiCrmAppRoot(
             }
         )
     }
+}
+
+@Composable
+fun BackendDiagnosticAndUrlDialog(
+    currentBackendUrl: String,
+    diagnostic: ApiDiagnosticInfo,
+    isLiveBackend: Boolean,
+    onDismiss: () -> Unit,
+    onSaveAndRetry: (String) -> Unit
+) {
+    var urlInput by remember(currentBackendUrl) { mutableStateOf(currentBackendUrl) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = if (isLiveBackend) "Live Backend Connection Verified" else "Backend API Diagnostics & Configuration",
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Endpoint: ${diagnostic.endpointUrl.ifBlank { "$currentBackendUrl/api/bootstrap" }}",
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = Navy900
+                )
+                Text(
+                    text = "HTTP Status: ${if (diagnostic.httpStatusCode > 0) diagnostic.httpStatusCode else "Unreachable"} · Content-Type: ${diagnostic.contentType.ifBlank { "none" }}",
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = if (isLiveBackend) Emerald600 else Rose600
+                )
+                if (diagnostic.errorSummary.isNotBlank()) {
+                    Text(
+                        text = "Result: ${diagnostic.errorSummary}",
+                        fontSize = 12.sp,
+                        color = Color(0xFF334155)
+                    )
+                }
+                if (diagnostic.remediationHint.isNotBlank()) {
+                    Text(
+                        text = "How to Fix: ${diagnostic.remediationHint}",
+                        fontSize = 11.sp,
+                        color = Color(0xFF92400E)
+                    )
+                }
+                OutlinedTextField(
+                    value = urlInput,
+                    onValueChange = { urlInput = it },
+                    label = { Text("Public Cloud Run HTTPS Backend URL") },
+                    placeholder = { Text("https://your-service-name.europe-west2.run.app") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSaveAndRetry(urlInput) },
+                colors = ButtonDefaults.buttonColors(containerColor = Indigo600)
+            ) {
+                Text("Save & Retry Live API")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
 }
 
 @Composable

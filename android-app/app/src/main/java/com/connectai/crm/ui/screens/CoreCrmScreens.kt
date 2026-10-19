@@ -30,7 +30,9 @@ import java.util.Locale
 fun OverviewScreen(
     snapshot: CrmWorkspaceSnapshot,
     onOpenNewLeadDialog: () -> Unit,
-    onNavigate: (NavDestination) -> Unit
+    onNavigate: (NavDestination) -> Unit,
+    onRetryLiveApi: () -> Unit = {},
+    onOpenBackendConfig: () -> Unit = {}
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var stageFilter by remember { mutableStateOf("All") }
@@ -55,17 +57,91 @@ fun OverviewScreen(
     } else 0
     val pendingTasks = snapshot.tasks.count { it.status != "completed" }
     val currencyFmt = NumberFormat.getCurrencyInstance(Locale.US).apply { maximumFractionDigits = 0 }
+    val isLive = snapshot.isLiveBackend
+    val kpiPrefix = if (isLive) "" else "Demo "
+    val kpiSuffix = if (isLive) "" else " (Sample)"
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        if (!isLive) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color(0xFFFFFBEB),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, Color(0xFFF59E0B), RoundedCornerShape(14.dp))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "DEMO DATA NOTICE — NOT REAL BUSINESS RECORDS",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                color = Color(0xFF92400E)
+                            )
+                            StatusPill(text = "DEMO SANDBOX", color = Amber600)
+                        }
+                        Text(
+                            text = snapshot.apiDiagnostic.errorSummary.ifBlank { snapshot.connectionBanner },
+                            fontSize = 12.sp,
+                            color = Color(0xFF78350F)
+                        )
+                        if (snapshot.apiDiagnostic.endpointUrl.isNotBlank()) {
+                            Text(
+                                text = "Endpoint: ${snapshot.apiDiagnostic.endpointUrl} · HTTP ${snapshot.apiDiagnostic.httpStatusCode} · Content-Type: ${snapshot.apiDiagnostic.contentType.ifBlank { "none" }}",
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = Color(0xFF92400E)
+                            )
+                        }
+                        if (snapshot.apiDiagnostic.remediationHint.isNotBlank()) {
+                            Text(
+                                text = snapshot.apiDiagnostic.remediationHint,
+                                fontSize = 11.sp,
+                                color = Color(0xFF78350F)
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = onRetryLiveApi,
+                                colors = ButtonDefaults.buttonColors(containerColor = Amber600)
+                            ) {
+                                Text("Retry Live API", fontSize = 11.sp)
+                            }
+                            OutlinedButton(onClick = onOpenBackendConfig) {
+                                Text("Configure Cloud Run URL", fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         item {
             ExecutiveHeroBanner(
-                eyebrow = "YOUR BUSINESS AT A GLANCE · ${snapshot.activeTenant.name}",
+                eyebrow = if (isLive) {
+                    "YOUR BUSINESS AT A GLANCE · ${snapshot.activeTenant.name}"
+                } else {
+                    "SAMPLE DEMO WORKSPACE · NOT CONNECTED TO LIVE BACKEND"
+                },
                 title = "Welcome to ConnectAI, ${snapshot.user.name}",
-                subtitle = "Your intelligent Android workspace for leads, conversations, international recruitment, and growth.",
+                subtitle = if (isLive) {
+                    "Your intelligent Android workspace for leads, conversations, international recruitment, and growth."
+                } else {
+                    "All records, metrics, and pipeline values below are labeled sample demo records until a public Cloud Run backend URL is connected."
+                },
                 primaryActionText = "+ Add New Lead",
                 onPrimaryAction = onOpenNewLeadDialog,
                 secondaryActionText = "Open Unified Inbox (${snapshot.conversations.size})",
@@ -108,16 +184,16 @@ fun OverviewScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     KpiMetricCard(
-                        title = "Total Leads",
+                        title = "${kpiPrefix}Total Leads",
                         value = "${filteredLeads.size}",
-                        subtitle = "${snapshot.contacts.size} CRM Contacts",
+                        subtitle = "${snapshot.contacts.size} CRM Contacts$kpiSuffix",
                         accentColor = Indigo600,
                         modifier = Modifier.weight(1f)
                     )
                     KpiMetricCard(
-                        title = "Active Threads",
+                        title = "${kpiPrefix}Active Threads",
                         value = "${snapshot.conversations.size}",
-                        subtitle = "${snapshot.conversations.sumOf { it.unreadCount }} unread msgs",
+                        subtitle = "${snapshot.conversations.sumOf { it.unreadCount }} unread msgs$kpiSuffix",
                         accentColor = ElectricBlue600,
                         modifier = Modifier.weight(1f)
                     )
@@ -127,16 +203,16 @@ fun OverviewScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     KpiMetricCard(
-                        title = "Qualified Leads",
+                        title = "${kpiPrefix}Qualified Leads",
                         value = "${qualifiedLeads.size}",
-                        subtitle = "Ready for next stage",
+                        subtitle = "Ready for next stage$kpiSuffix",
                         accentColor = Violet600,
                         modifier = Modifier.weight(1f)
                     )
                     KpiMetricCard(
-                        title = "Pipeline Value",
+                        title = "${kpiPrefix}Pipeline Value",
                         value = currencyFmt.format(pipelineValue),
-                        subtitle = "Qualified opportunities",
+                        subtitle = if (isLive) "Qualified opportunities" else "Sample demo value only",
                         accentColor = Emerald600,
                         modifier = Modifier.weight(1f)
                     )
@@ -146,16 +222,16 @@ fun OverviewScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     KpiMetricCard(
-                        title = "Follow-ups Due",
+                        title = "${kpiPrefix}Follow-ups Due",
                         value = "$pendingTasks",
-                        subtitle = "${snapshot.appointments.size} interviews booked",
+                        subtitle = "${snapshot.appointments.size} interviews$kpiSuffix",
                         accentColor = Amber600,
                         modifier = Modifier.weight(1f)
                     )
                     KpiMetricCard(
-                        title = "Conversion Rate",
+                        title = "${kpiPrefix}Conversion Rate",
                         value = "$conversionRate%",
-                        subtitle = "${convertedLeads.size} Offer/Visa/Deployed",
+                        subtitle = "${convertedLeads.size} Offer/Visa/Deployed$kpiSuffix",
                         accentColor = Emerald600,
                         modifier = Modifier.weight(1f)
                     )
@@ -165,7 +241,11 @@ fun OverviewScreen(
 
         item {
             Text(
-                text = "Recent Candidates & Business Opportunities",
+                text = if (isLive) {
+                    "Recent Candidates & Business Opportunities"
+                } else {
+                    "Sample Demo Candidates (Not Real Business Records)"
+                },
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
                 color = Navy900
@@ -196,7 +276,12 @@ fun OverviewScreen(
                             fontSize = 14.sp,
                             color = Navy900
                         )
-                        StatusPill(text = lead.stage, color = Indigo600)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (!isLive) {
+                                StatusPill(text = "DEMO SAMPLE", color = Amber600)
+                            }
+                            StatusPill(text = lead.stage, color = Indigo600)
+                        }
                     }
                     Text(
                         text = "${lead.preferredJob.ifBlank { lead.title }} · ${lead.destinationCountry.ifBlank { "Global" }}",
@@ -214,11 +299,11 @@ fun OverviewScreen(
                             color = Color(0xFF64748B)
                         )
                         Text(
-                            text = currencyFmt.format(lead.estimatedValueUsd),
+                            text = if (isLive) currencyFmt.format(lead.estimatedValueUsd) else "${currencyFmt.format(lead.estimatedValueUsd)} (Demo)",
                             fontSize = 12.sp,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
-                            color = Emerald600
+                            color = if (isLive) Emerald600 else Amber600
                         )
                     }
                 }
