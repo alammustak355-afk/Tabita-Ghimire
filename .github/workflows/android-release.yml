@@ -1,0 +1,55 @@
+name: Build ConnectAI CRM Android APK & Signed Play Store AAB
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'android-app/**'
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android-app
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK (API 35)
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build Debug APK for Direct Phone Testing
+        run: gradle assembleDebug --stacktrace
+
+      - name: Build Release Android App Bundle (.aab) for Google Play Console
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: gradle bundleRelease --stacktrace
+
+      - name: Upload Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: connectai-crm-debug-apk
+          path: android-app/app/build/outputs/apk/debug/*.apk
+
+      - name: Upload Release Play Store AAB Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: connectai-crm-release-aab
+          path: android-app/app/build/outputs/bundle/release/*.aab

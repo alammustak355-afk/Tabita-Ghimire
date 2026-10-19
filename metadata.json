@@ -1,0 +1,6 @@
+{
+  "name": "ConnectAI CRM — Omnichannel WhatsApp, Social & Voice AI SaaS",
+  "description": "Production multi-tenant B2B CRM and AI automation platform connecting official WhatsApp Business Cloud API, Facebook Messenger, Instagram, TikTok, social ad boosts, and Gemini Voice AI agents.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
