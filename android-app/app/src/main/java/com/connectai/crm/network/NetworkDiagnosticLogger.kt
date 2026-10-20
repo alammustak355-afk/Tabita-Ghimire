@@ -4,9 +4,10 @@ import android.util.Log
 import com.connectai.crm.BuildConfig
 
 /**
- * Debug-only diagnostic utility that logs the raw network response body and safe metadata
- * when an API request fails. Strictly disabled in release builds (!BuildConfig.DEBUG) and
- * excludes all sensitive headers (Authorization, Cookie, Set-Cookie, API keys, etc.).
+ * Debug-only diagnostic utility that intercepts failed API calls, classifies whether the raw
+ * response body is an HTML document, auth/cookie gate, or HTTP error page, and logs the raw
+ * response body to Logcat. Strictly disabled in release builds (!BuildConfig.DEBUG) and
+ * explicitly excludes sensitive headers such as Authorization, Cookie, Set-Cookie, and API keys.
  */
 object NetworkDiagnosticLogger {
 
@@ -37,23 +38,35 @@ object NetworkDiagnosticLogger {
         RegexOption.IGNORE_CASE
     )
 
+    private val HTML_TITLE_REGEX = Regex("<title[^>]*>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+
     /**
-     * Filters out any sensitive headers so credentials, cookies, and tokens are never logged.
+     * Checks whether a header key is sensitive (e.g., Authorization, Cookie, Set-Cookie, tokens, keys).
+     */
+    internal fun isSensitiveHeader(headerName: String): Boolean {
+        val lowerKey = headerName.trim().lowercase()
+        if (lowerKey.isEmpty()) return false
+        return lowerKey in SENSITIVE_HEADER_NAMES ||
+            lowerKey.contains("authorization") ||
+            lowerKey.contains("auth") ||
+            lowerKey.contains("token") ||
+            lowerKey.contains("secret") ||
+            lowerKey.contains("cookie") ||
+            lowerKey.contains("key") ||
+            lowerKey.contains("password") ||
+            lowerKey.contains("credential")
+    }
+
+    /**
+     * Filters out any sensitive headers (such as Authorization, Cookie, Set-Cookie, X-Api-Key)
+     * so credentials and session tokens are never written to Logcat.
      */
     internal fun filterSafeHeaders(rawHeaders: Map<String?, List<String>?>?): Map<String, String> {
         if (rawHeaders.isNullOrEmpty()) return emptyMap()
         val safe = LinkedHashMap<String, String>()
         for ((key, values) in rawHeaders) {
             val cleanKey = key?.trim().orEmpty()
-            if (cleanKey.isEmpty()) continue
-            val lowerKey = cleanKey.lowercase()
-            if (lowerKey in SENSITIVE_HEADER_NAMES ||
-                lowerKey.contains("token") ||
-                lowerKey.contains("secret") ||
-                lowerKey.contains("cookie") ||
-                lowerKey.contains("auth") ||
-                lowerKey.contains("key")
-            ) {
+            if (cleanKey.isEmpty() || isSensitiveHeader(cleanKey)) {
                 continue
             }
             val joined = values?.joinToString(", ")?.trim().orEmpty()
@@ -62,6 +75,64 @@ object NetworkDiagnosticLogger {
             }
         }
         return safe
+    }
+
+    /**
+     * Inspects the HTTP status code, Content-Type, and raw response body to determine whether
+     * the failed API response is an HTML page, proxy auth/cookie gate, HTTP error page, or JSON error.
+     */
+    internal fun classifyResponseBodyType(
+        httpStatusCode: Int,
+        contentType: String,
+        rawResponseBody: String
+    ): String {
+        val trimmed = rawResponseBody.trim()
+        val lowerBody = trimmed.take(600).lowercase()
+        val lowerCt = contentType.lowercase()
+
+        val isHtml = lowerCt.contains("text/html") ||
+            lowerBody.startsWith("<!doctype html") ||
+            lowerBody.startsWith("<html") ||
+            lowerBody.startsWith("<head") ||
+            lowerBody.startsWith("<body") ||
+            lowerBody.contains("<html")
+
+        val htmlTitle = HTML_TITLE_REGEX.find(trimmed)?.groupValues?.getOrNull(1)
+            ?.replace(Regex("\\s+"), " ")
+            ?.trim()
+            ?.take(80)
+            .orEmpty()
+        val titleSuffix = if (htmlTitle.isNotEmpty()) " (title: \"$htmlTitle\")" else ""
+
+        return when {
+            lowerBody.contains("__cookie_check.html") ||
+                lowerBody.contains("__aistudio_auth_flow.js") ||
+                lowerBody.contains("applet-auth-bridge") ||
+                lowerBody.contains("accounts.google.com") -> {
+                "HTML_AUTH_OR_COOKIE_GATE$titleSuffix"
+            }
+            isHtml && httpStatusCode >= 400 -> {
+                "HTML_ERROR_PAGE (HTTP $httpStatusCode)$titleSuffix"
+            }
+            isHtml -> {
+                "HTML_DOCUMENT_OR_FALLBACK_PAGE (Expected JSON)$titleSuffix"
+            }
+            httpStatusCode in 300..399 -> {
+                "HTTP_REDIRECT_RESPONSE (HTTP $httpStatusCode)"
+            }
+            trimmed.isEmpty() -> {
+                if (httpStatusCode > 0) "EMPTY_ERROR_RESPONSE (HTTP $httpStatusCode)" else "NETWORK_OR_CONNECTION_ERROR"
+            }
+            (trimmed.startsWith("{") || trimmed.startsWith("[")) && httpStatusCode >= 400 -> {
+                "JSON_ERROR_RESPONSE (HTTP $httpStatusCode)"
+            }
+            httpStatusCode >= 400 -> {
+                "PLAIN_TEXT_ERROR_PAGE (HTTP $httpStatusCode)"
+            }
+            else -> {
+                "MALFORMED_OR_UNEXPECTED_PAYLOAD"
+            }
+        }
     }
 
     /**
@@ -100,31 +171,40 @@ object NetworkDiagnosticLogger {
         failureReason: String,
         rawResponseBody: String,
         responseHeaders: Map<String?, List<String>?>? = null,
+        requestHeaders: Map<String?, List<String>?>? = null,
         isDebugBuild: Boolean = BuildConfig.DEBUG
     ): String {
         if (!isDebugBuild) return ""
 
         val safeUrl = redactUrlSecrets(endpointUrl)
-        val safeHeaders = filterSafeHeaders(responseHeaders)
+        val safeRequestHeaders = filterSafeHeaders(requestHeaders)
+        val safeResponseHeaders = filterSafeHeaders(responseHeaders)
+        val bodyClassification = classifyResponseBodyType(httpStatusCode, contentType, rawResponseBody)
         val sanitizedBody = sanitizeRawResponseBody(rawResponseBody)
 
         return buildString {
-            appendLine("=== ConnectAI CRM Network Failure Diagnostic (DEBUG ONLY) ===")
-            appendLine("Request      : ${method.uppercase()} $safeUrl")
-            appendLine("HTTP Status  : $httpStatusCode | Content-Type: ${contentType.ifBlank { "none" }} | Latency: ${latencyMs}ms")
-            appendLine("Reason       : $failureReason")
-            if (safeHeaders.isNotEmpty()) {
-                appendLine("Safe Headers : $safeHeaders")
+            appendLine("=== ConnectAI CRM Failed API Call Intercepted (DEBUG ONLY) ===")
+            appendLine("Request       : ${method.uppercase()} $safeUrl")
+            appendLine("HTTP Status   : $httpStatusCode | Content-Type: ${contentType.ifBlank { "none" }} | Latency: ${latencyMs}ms")
+            appendLine("Body Type     : $bodyClassification")
+            appendLine("Failure Reason: $failureReason")
+            if (safeRequestHeaders.isNotEmpty()) {
+                appendLine("Safe Req Hdrs : $safeRequestHeaders")
             }
-            appendLine("Raw Body     : $sanitizedBody")
-            append("=== End Network Failure Diagnostic ===")
+            if (safeResponseHeaders.isNotEmpty()) {
+                appendLine("Safe Resp Hdrs: $safeResponseHeaders")
+            }
+            appendLine("Raw Body      : $sanitizedBody")
+            append("=== End Failed API Call Diagnostic ===")
         }
     }
 
     /**
-     * Logs a failed HTTP response to Android Logcat strictly in debug builds (BuildConfig.DEBUG).
+     * Primary diagnostic interceptor for failed API calls.
+     * Strictly executes in debug mode (BuildConfig.DEBUG), classifies whether the response is HTML
+     * or an error page, excludes sensitive headers such as Authorization, and logs the raw body to Logcat.
      */
-    fun logFailedResponse(
+    fun interceptFailedApiCall(
         method: String,
         endpointUrl: String,
         httpStatusCode: Int,
@@ -133,6 +213,7 @@ object NetworkDiagnosticLogger {
         failureReason: String,
         rawResponseBody: String,
         responseHeaders: Map<String?, List<String>?>? = null,
+        requestHeaders: Map<String?, List<String>?>? = null,
         isDebugBuild: Boolean = BuildConfig.DEBUG
     ): String {
         if (!isDebugBuild) return ""
@@ -145,13 +226,42 @@ object NetworkDiagnosticLogger {
             failureReason = failureReason,
             rawResponseBody = rawResponseBody,
             responseHeaders = responseHeaders,
+            requestHeaders = requestHeaders,
             isDebugBuild = true
         )
         if (payload.isNotEmpty()) {
             runCatching {
-                Log.w(TAG, payload)
+                Log.e(TAG, payload)
             }
         }
         return payload
     }
+
+    /**
+     * Backwards-compatible alias that delegates directly to [interceptFailedApiCall].
+     */
+    fun logFailedResponse(
+        method: String,
+        endpointUrl: String,
+        httpStatusCode: Int,
+        contentType: String,
+        latencyMs: Long,
+        failureReason: String,
+        rawResponseBody: String,
+        responseHeaders: Map<String?, List<String>?>? = null,
+        requestHeaders: Map<String?, List<String>?>? = null,
+        isDebugBuild: Boolean = BuildConfig.DEBUG
+    ): String = interceptFailedApiCall(
+        method = method,
+        endpointUrl = endpointUrl,
+        httpStatusCode = httpStatusCode,
+        contentType = contentType,
+        latencyMs = latencyMs,
+        failureReason = failureReason,
+        rawResponseBody = rawResponseBody,
+        responseHeaders = responseHeaders,
+        requestHeaders = requestHeaders,
+        isDebugBuild = isDebugBuild
+    )
 }
+

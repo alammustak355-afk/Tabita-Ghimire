@@ -242,6 +242,10 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
                 }
             }
         }
+
+        internal fun parseBootstrapWorkspaceJson(root: JSONObject, endpointUrl: String): CrmWorkspaceSnapshot {
+            return parseBootstrapJson(root, endpointUrl)
+        }
     }
 
     private suspend fun executeJsonRequest(
@@ -302,7 +306,7 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
                     } else {
                         "Update the Backend URL to the direct HTTPS endpoint without redirects."
                     }
-                    NetworkDiagnosticLogger.logFailedResponse(
+                    NetworkDiagnosticLogger.interceptFailedApiCall(
                         method = method,
                         endpointUrl = fullUrl,
                         httpStatusCode = code,
@@ -360,7 +364,7 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
                         in 500..599 -> "Backend server error (HTTP $code). Verify Cloud SQL database connectivity and server logs."
                         else -> "Check backend deployment status and server logs for $fullUrl."
                     }
-                    NetworkDiagnosticLogger.logFailedResponse(
+                    NetworkDiagnosticLogger.interceptFailedApiCall(
                         method = method,
                         endpointUrl = fullUrl,
                         httpStatusCode = code,
@@ -394,7 +398,7 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
                     )
                 } catch (parseEx: BackendApiException) {
                     shouldDisconnect = true
-                    NetworkDiagnosticLogger.logFailedResponse(
+                    NetworkDiagnosticLogger.interceptFailedApiCall(
                         method = method,
                         endpointUrl = fullUrl,
                         httpStatusCode = code,
@@ -412,7 +416,7 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
                 shouldDisconnect = true
                 val elapsedMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
                 val errSummary = "${e.javaClass.simpleName}: ${e.message ?: "Network connection failed"}"
-                NetworkDiagnosticLogger.logFailedResponse(
+                NetworkDiagnosticLogger.interceptFailedApiCall(
                     method = method,
                     endpointUrl = fullUrl,
                     httpStatusCode = 0,
@@ -808,8 +812,9 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
         }
         return executeJsonRequest("/api/tenants/settings", "POST", payload)
     }
+}
 
-    private fun parseBootstrapJson(root: JSONObject, endpointUrl: String): CrmWorkspaceSnapshot {
+internal fun parseBootstrapJson(root: JSONObject, endpointUrl: String): CrmWorkspaceSnapshot {
         val userObj = root.optJSONObject("user") ?: JSONObject()
         val membershipObj = root.optJSONObject("membership") ?: JSONObject()
         val tenantObj = root.optJSONObject("activeTenant") ?: JSONObject()
@@ -1112,4 +1117,4 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
             auditLogs = auditLogs
         )
     }
-}
+
