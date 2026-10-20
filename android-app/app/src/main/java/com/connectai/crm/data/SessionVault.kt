@@ -107,6 +107,9 @@ class SessionVault(context: Context) {
             if (url.startsWith("http://", ignoreCase = true)) {
                 url = "https://" + url.substring(7)
             }
+            if (url.startsWith("https://ais-dev-", ignoreCase = true) && url.contains(".run.app", ignoreCase = true)) {
+                url = "https://ais-pre-" + url.substring("https://ais-dev-".length)
+            }
             url = url.trimEnd('/')
             val suffixesToStrip = listOf("/api/bootstrap", "/api/health", "/api")
             for (suffix in suffixesToStrip) {

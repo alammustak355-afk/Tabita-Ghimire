@@ -51,6 +51,10 @@ class ConnectAiStabilityTest {
             "https://connectai-prod.a.run.app",
             SessionVault.normalizeBackendBaseUrl("  https://connectai-prod.a.run.app/api/health  ")
         )
+        assertEquals(
+            "https://ais-pre-23awl6srmfqwmf4tftm5ii-46650627537.europe-west2.run.app",
+            SessionVault.normalizeBackendBaseUrl("https://ais-dev-23awl6srmfqwmf4tftm5ii-46650627537.europe-west2.run.app/api/bootstrap")
+        )
     }
 
     @Test
