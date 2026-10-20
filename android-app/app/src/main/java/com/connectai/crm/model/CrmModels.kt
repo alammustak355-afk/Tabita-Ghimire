@@ -260,7 +260,7 @@ object DemoFallbackDataset {
         )
         return CrmWorkspaceSnapshot(
             isLiveBackend = false,
-            connectionBanner = "BACKEND NOT CONNECTED — $reason",
+            connectionBanner = "LIVE API DISCONNECTED — $reason",
             apiDiagnostic = diagnostic,
             user = UserProfile(
                 id = 1,

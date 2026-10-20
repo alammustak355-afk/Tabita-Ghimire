@@ -58,8 +58,6 @@ fun OverviewScreen(
     val pendingTasks = snapshot.tasks.count { it.status != "completed" }
     val currencyFmt = NumberFormat.getCurrencyInstance(Locale.US).apply { maximumFractionDigits = 0 }
     val isLive = snapshot.isLiveBackend
-    val kpiPrefix = if (isLive) "" else "Demo "
-    val kpiSuffix = if (isLive) "" else " (Sample)"
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -85,13 +83,13 @@ fun OverviewScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "DEMO DATA NOTICE — NOT REAL BUSINESS RECORDS",
+                                text = "LIVE API CONNECTION STATUS — OFFLINE",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 fontFamily = FontFamily.Monospace,
                                 color = Color(0xFF92400E)
                             )
-                            StatusPill(text = "DEMO SANDBOX", color = Amber600)
+                            StatusPill(text = "DISCONNECTED", color = Rose600)
                         }
                         Text(
                             text = snapshot.apiDiagnostic.errorSummary.ifBlank { snapshot.connectionBanner },
@@ -116,12 +114,12 @@ fun OverviewScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = onRetryLiveApi,
-                                colors = ButtonDefaults.buttonColors(containerColor = Amber600)
+                                colors = ButtonDefaults.buttonColors(containerColor = Indigo600)
                             ) {
                                 Text("Retry Live API", fontSize = 11.sp)
                             }
                             OutlinedButton(onClick = onOpenBackendConfig) {
-                                Text("Configure Cloud Run URL", fontSize = 11.sp)
+                                Text("API Diagnostics & URL", fontSize = 11.sp)
                             }
                         }
                     }
@@ -134,13 +132,13 @@ fun OverviewScreen(
                 eyebrow = if (isLive) {
                     "YOUR BUSINESS AT A GLANCE · ${snapshot.activeTenant.name}"
                 } else {
-                    "SAMPLE DEMO WORKSPACE · NOT CONNECTED TO LIVE BACKEND"
+                    "LIVE API DISCONNECTED · RETRY CONNECTION"
                 },
                 title = "Welcome to ConnectAI, ${snapshot.user.name}",
                 subtitle = if (isLive) {
                     "Your intelligent Android workspace for leads, conversations, international recruitment, and growth."
                 } else {
-                    "All records, metrics, and pipeline values below are labeled sample demo records until a public Cloud Run backend URL is connected."
+                    "Live backend connection is currently unavailable. Tap 'Retry Live API' to synchronize with your Cloud SQL PostgreSQL workspace."
                 },
                 primaryActionText = "+ Add New Lead",
                 onPrimaryAction = onOpenNewLeadDialog,
@@ -184,16 +182,16 @@ fun OverviewScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     KpiMetricCard(
-                        title = "${kpiPrefix}Total Leads",
+                        title = "Total Leads",
                         value = "${filteredLeads.size}",
-                        subtitle = "${snapshot.contacts.size} CRM Contacts$kpiSuffix",
+                        subtitle = "${snapshot.contacts.size} CRM Contacts",
                         accentColor = Indigo600,
                         modifier = Modifier.weight(1f)
                     )
                     KpiMetricCard(
-                        title = "${kpiPrefix}Active Threads",
+                        title = "Active Threads",
                         value = "${snapshot.conversations.size}",
-                        subtitle = "${snapshot.conversations.sumOf { it.unreadCount }} unread msgs$kpiSuffix",
+                        subtitle = "${snapshot.conversations.sumOf { it.unreadCount }} unread msgs",
                         accentColor = ElectricBlue600,
                         modifier = Modifier.weight(1f)
                     )
@@ -203,16 +201,16 @@ fun OverviewScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     KpiMetricCard(
-                        title = "${kpiPrefix}Qualified Leads",
+                        title = "Qualified Leads",
                         value = "${qualifiedLeads.size}",
-                        subtitle = "Ready for next stage$kpiSuffix",
+                        subtitle = "Ready for next stage",
                         accentColor = Violet600,
                         modifier = Modifier.weight(1f)
                     )
                     KpiMetricCard(
-                        title = "${kpiPrefix}Pipeline Value",
+                        title = "Pipeline Value",
                         value = currencyFmt.format(pipelineValue),
-                        subtitle = if (isLive) "Qualified opportunities" else "Sample demo value only",
+                        subtitle = "Qualified opportunities",
                         accentColor = Emerald600,
                         modifier = Modifier.weight(1f)
                     )
@@ -222,16 +220,16 @@ fun OverviewScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     KpiMetricCard(
-                        title = "${kpiPrefix}Follow-ups Due",
+                        title = "Follow-ups Due",
                         value = "$pendingTasks",
-                        subtitle = "${snapshot.appointments.size} interviews$kpiSuffix",
+                        subtitle = "${snapshot.appointments.size} interviews",
                         accentColor = Amber600,
                         modifier = Modifier.weight(1f)
                     )
                     KpiMetricCard(
-                        title = "${kpiPrefix}Conversion Rate",
+                        title = "Conversion Rate",
                         value = "$conversionRate%",
-                        subtitle = "${convertedLeads.size} Offer/Visa/Deployed$kpiSuffix",
+                        subtitle = "${convertedLeads.size} Offer/Visa/Deployed",
                         accentColor = Emerald600,
                         modifier = Modifier.weight(1f)
                     )
@@ -241,11 +239,7 @@ fun OverviewScreen(
 
         item {
             Text(
-                text = if (isLive) {
-                    "Recent Candidates & Business Opportunities"
-                } else {
-                    "Sample Demo Candidates (Not Real Business Records)"
-                },
+                text = "Recent Candidates & Business Opportunities",
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
                 color = Navy900

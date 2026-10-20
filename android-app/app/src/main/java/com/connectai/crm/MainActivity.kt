@@ -191,7 +191,7 @@ fun ConnectAiCrmAppRoot(
                                     text = if (snapshot.isLiveBackend) {
                                         "LIVE CLOUD SQL · ${snapshot.activeTenant.name}"
                                     } else {
-                                        "DEMO MODE (SAMPLE DATA — NOT LIVE)"
+                                        "OFFLINE — LIVE API DISCONNECTED"
                                     },
                                     fontSize = 10.sp,
                                     fontFamily = FontFamily.Monospace,

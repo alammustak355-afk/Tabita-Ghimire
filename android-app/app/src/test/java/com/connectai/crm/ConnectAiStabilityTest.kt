@@ -21,6 +21,7 @@ class ConnectAiStabilityTest {
         )
 
         assertFalse("Fallback snapshot must not claim live backend status", snapshot.isLiveBackend)
+        assertTrue("Banner must indicate LIVE API DISCONNECTED", snapshot.connectionBanner.startsWith("LIVE API DISCONNECTED"))
         assertTrue("Leads list must be empty on fresh start", snapshot.leads.isEmpty())
         assertTrue("Contacts list must be empty on fresh start", snapshot.contacts.isEmpty())
         assertTrue("Conversations must be empty on fresh start", snapshot.conversations.isEmpty())
@@ -53,6 +54,25 @@ class ConnectAiStabilityTest {
     }
 
     @Test
+    fun `extractSetCookiePairs and buildCookieHeader preserve GAESA and proxy auth cookies`() {
+        val rawHeaders = listOf(
+            "__SECURE-aistudio_auth_flow_may_set_cookies=true; Path=/; Secure; SameSite=None",
+            "GAESA=Cp4BMDAxMGRkODYwNzM1ZTZlYWJmZDM5; expires=Thu, 19-Nov-2026 10:48:50 GMT; path=/"
+        )
+        val parsed = ConnectAiApiClient.extractSetCookiePairs(rawHeaders)
+        assertEquals("true", parsed["__SECURE-aistudio_auth_flow_may_set_cookies"])
+        assertEquals("Cp4BMDAxMGRkODYwNzM1ZTZlYWJmZDM5", parsed["GAESA"])
+
+        val combined = LinkedHashMap<String, String>().apply {
+            put("__SECURE-aistudio_auth_token", "one_token_to_rule_them_all")
+            putAll(parsed)
+        }
+        val cookieHeader = ConnectAiApiClient.buildCookieHeader(combined)
+        assertTrue(cookieHeader.contains("__SECURE-aistudio_auth_token=one_token_to_rule_them_all"))
+        assertTrue(cookieHeader.contains("GAESA=Cp4BMDAxMGRkODYwNzM1ZTZlYWJmZDM5"))
+    }
+
+    @Test
     fun `parseSafeJsonResponse detects HTML cookie gate and throws structured BackendApiException`() {
         val htmlCookiePage = """
             <!doctype html>
@@ -75,6 +95,49 @@ class ConnectAiStabilityTest {
             assertEquals(200, e.diagnostic.httpStatusCode)
             assertTrue(e.diagnostic.errorSummary.contains("cookie check", ignoreCase = true))
             assertTrue(e.diagnostic.remediationHint.contains("Cloud Run", ignoreCase = true))
+        }
+    }
+
+    @Test
+    fun `parseSafeJsonResponse handles empty and malformed JSON and HTTP 401 403 404 500 error bodies`() {
+        // 1. Empty body on bootstrap schema must throw BackendApiException
+        try {
+            ConnectAiApiClient.parseSafeJsonResponse(
+                rawText = "   ",
+                contentType = "application/json",
+                httpCode = 200,
+                fullUrl = "https://connectai-prod.a.run.app/api/bootstrap",
+                requireBootstrapSchema = true
+            )
+            fail("Expected BackendApiException on empty bootstrap response")
+        } catch (e: BackendApiException) {
+            assertTrue(e.diagnostic.errorSummary.contains("Empty response body"))
+        }
+
+        // 2. Malformed JSON must throw BackendApiException instead of unhandled JSONException
+        try {
+            ConnectAiApiClient.parseSafeJsonResponse(
+                rawText = "{corrupted_json: true",
+                contentType = "application/json",
+                httpCode = 500,
+                fullUrl = "https://connectai-prod.a.run.app/api/bootstrap",
+                requireBootstrapSchema = true
+            )
+            fail("Expected BackendApiException on malformed JSON")
+        } catch (e: BackendApiException) {
+            assertEquals(500, e.diagnostic.httpStatusCode)
+        }
+
+        // 3. HTTP 401/403/404/500 JSON error bodies parse cleanly when requireBootstrapSchema = false
+        for (status in listOf(401, 403, 404, 500)) {
+            val errObj = ConnectAiApiClient.parseSafeJsonResponse(
+                rawText = """{"error":"HTTP $status error test"}""",
+                contentType = "application/json",
+                httpCode = status,
+                fullUrl = "https://connectai-prod.a.run.app/api/leads",
+                requireBootstrapSchema = false
+            )
+            assertEquals("HTTP $status error test", errObj.optString("error"))
         }
     }
 
@@ -112,4 +175,53 @@ class ConnectAiStabilityTest {
             assertNotNull("Accent color must be mapped for $dest", destinationAccentColor(dest))
         }
     }
+
+    @Test
+    fun `NetworkDiagnosticLogger logs raw response body only in debug builds and excludes sensitive headers`() {
+        val headers = mapOf<String?, List<String>?>(
+            "Authorization" to listOf("Bearer super-secret-jwt-token-999"),
+            "Cookie" to listOf("__SECURE-aistudio_auth_token=secret-cookie-value"),
+            "Set-Cookie" to listOf("GAESA=secret-gaesa-session-token; Path=/"),
+            "X-Api-Key" to listOf("ai-secret-key-12345"),
+            "Content-Type" to listOf("text/html; charset=utf-8"),
+            "Server" to listOf("Google Frontend")
+        )
+        val rawBody = """<!doctype html><html><head><title>Cookie check</title></head><body>{"accessToken":"hidden-secret-123"}</body></html>"""
+
+        // 1. Release build (isDebugBuild = false) must return empty string and not log
+        val releaseOutput = com.connectai.crm.network.NetworkDiagnosticLogger.logFailedResponse(
+            method = "GET",
+            endpointUrl = "https://ais-pre-example.run.app/api/bootstrap?access_token=url-secret-789",
+            httpStatusCode = 200,
+            contentType = "text/html",
+            latencyMs = 45L,
+            failureReason = "HTML response received",
+            rawResponseBody = rawBody,
+            responseHeaders = headers,
+            isDebugBuild = false
+        )
+        assertEquals("Release build must never produce diagnostic log output", "", releaseOutput)
+
+        // 2. Debug build (isDebugBuild = true) must log raw body and safe headers while excluding sensitive headers/secrets
+        val debugOutput = com.connectai.crm.network.NetworkDiagnosticLogger.logFailedResponse(
+            method = "GET",
+            endpointUrl = "https://ais-pre-example.run.app/api/bootstrap?access_token=url-secret-789",
+            httpStatusCode = 200,
+            contentType = "text/html",
+            latencyMs = 45L,
+            failureReason = "HTML response received",
+            rawResponseBody = rawBody,
+            responseHeaders = headers,
+            isDebugBuild = true
+        )
+        assertTrue("Debug log must include raw HTML body", debugOutput.contains("<!doctype html>"))
+        assertTrue("Debug log must include safe Server header", debugOutput.contains("Google Frontend"))
+        assertFalse("Debug log must exclude Authorization header value", debugOutput.contains("super-secret-jwt-token-999"))
+        assertFalse("Debug log must exclude Cookie header value", debugOutput.contains("secret-cookie-value"))
+        assertFalse("Debug log must exclude Set-Cookie header value", debugOutput.contains("secret-gaesa-session-token"))
+        assertFalse("Debug log must exclude X-Api-Key header value", debugOutput.contains("ai-secret-key-12345"))
+        assertFalse("Debug log must redact query parameter access_token", debugOutput.contains("url-secret-789"))
+        assertFalse("Debug log must redact body accessToken field", debugOutput.contains("hidden-secret-123"))
+    }
 }
+

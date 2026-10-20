@@ -767,8 +767,8 @@ fun SettingsSecurityScreen(
                     ) {
                         Text("Production Backend API Endpoint (HTTPS)", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         StatusPill(
-                            text = if (snapshot.isLiveBackend) "CONNECTED LIVE" else "DEMO FALLBACK",
-                            color = if (snapshot.isLiveBackend) Emerald600 else Amber600
+                            text = if (snapshot.isLiveBackend) "CONNECTED LIVE" else "DISCONNECTED",
+                            color = if (snapshot.isLiveBackend) Emerald600 else Rose600
                         )
                     }
                     if (snapshot.apiDiagnostic.endpointUrl.isNotBlank()) {
