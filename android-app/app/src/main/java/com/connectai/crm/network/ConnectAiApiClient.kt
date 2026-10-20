@@ -36,11 +36,14 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
             requestMethod = method
             // Handle 302 redirects manually so we capture GAESA Set-Cookie headers and preserve POST/PUT bodies
             instanceFollowRedirects = false
-            connectTimeout = 12000
-            readTimeout = 18000
+            connectTimeout = 15000
+            readTimeout = 20000
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            setRequestProperty("Connection", "keep-alive")
             setRequestProperty("Authorization", "Bearer ${sessionVault.bearerToken}")
+            setRequestProperty("x-actor-email", sessionVault.userEmail)
+            setRequestProperty("x-actor-name", sessionVault.userDisplayName)
             if (sessionVault.activeTenantSlug.isNotBlank()) {
                 setRequestProperty("x-tenant-slug", sessionVault.activeTenantSlug)
             }
@@ -254,8 +257,9 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
         var lastLocation = ""
         var lastContentType = ""
 
-        for (attempt in 1..3) {
+        for (attempt in 1..4) {
             val conn = openAuthenticatedConnection(path, method)
+            var shouldDisconnect = false
             try {
                 if (body != null) {
                     OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { writer ->
@@ -272,15 +276,18 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
                 // Handle HTTP 3xx Redirects:
                 // When AI Studio's Nginx proxy validates __SECURE-aistudio_auth_token, it caches the token,
                 // sets the GAESA sticky-session cookie, and returns 302 to the same endpoint URL.
-                // Retrying immediately with the captured GAESA cookie completes the handshake and returns HTTP 200 JSON.
+                // Drain the 200-byte redirect stream without disconnecting the socket so Android OkHttp
+                // reuses the same keep-alive TLS connection to the same Cloud Run instance on the immediate retry.
                 if (code in 300..399) {
+                    runCatching { conn.inputStream?.use { it.readBytes() } }
                     lastRedirectCode = code
                     lastLocation = locationHeader
                     lastContentType = contentType
                     val isBlockedAuthBridge = locationHeader.contains("applet-auth-bridge")
-                    if (!isBlockedAuthBridge && attempt < 3) {
+                    if (!isBlockedAuthBridge && attempt < 4) {
                         continue
                     }
+                    shouldDisconnect = true
                     val isCookieCheckRedirect = locationHeader.contains("__cookie_check") ||
                         isBlockedAuthBridge ||
                         fullUrl.contains("ais-pre-") ||
@@ -324,7 +331,16 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
                     BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
                 } ?: ""
 
+                // Automatic retry if the Cloud Run container is cold-starting (/warmup.html or 502/503/504)
+                val isWarmupResponse = code in listOf(502, 503, 504) ||
+                    text.contains("Starting Server...", ignoreCase = true)
+                if (isWarmupResponse && attempt < 4) {
+                    kotlinx.coroutines.delay(750L)
+                    continue
+                }
+
                 if (code !in 200..299) {
+                    shouldDisconnect = true
                     // Safely parse JSON, HTML, or plain-text error bodies without throwing JSONException
                     val parsedErrorMsg = runCatching {
                         val obj = parseSafeJsonResponse(text, contentType, code, fullUrl, false)
@@ -377,6 +393,7 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
                         requireBootstrapSchema = requireBootstrapSchema
                     )
                 } catch (parseEx: BackendApiException) {
+                    shouldDisconnect = true
                     NetworkDiagnosticLogger.logFailedResponse(
                         method = method,
                         endpointUrl = fullUrl,
@@ -392,6 +409,7 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
             } catch (e: BackendApiException) {
                 throw e
             } catch (e: Exception) {
+                shouldDisconnect = true
                 val elapsedMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L)
                 val errSummary = "${e.javaClass.simpleName}: ${e.message ?: "Network connection failed"}"
                 NetworkDiagnosticLogger.logFailedResponse(
@@ -416,7 +434,9 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
                     )
                 )
             } finally {
-                conn.disconnect()
+                if (shouldDisconnect) {
+                    runCatching { conn.disconnect() }
+                }
             }
         }
 
@@ -483,7 +503,7 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
     suspend fun fetchBootstrapWorkspace(): CrmWorkspaceSnapshot {
         val baseUrl = SessionVault.normalizeBackendBaseUrl(sessionVault.backendBaseUrl)
         val endpointUrl = "$baseUrl/api/bootstrap"
-        return try {
+        try {
             val root = executeJsonRequest(
                 path = "/api/bootstrap",
                 method = "GET",
@@ -502,27 +522,20 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
                     )
                 )
             }
-            parseBootstrapJson(root, endpointUrl)
+            return parseBootstrapJson(root, endpointUrl)
         } catch (e: BackendApiException) {
-            DemoFallbackDataset.buildSafeDemoSnapshot(
-                reason = e.diagnostic.errorSummary,
-                diagnostic = e.diagnostic,
-                companyName = sessionVault.companyName,
-                userName = sessionVault.userDisplayName
-            )
+            throw e
         } catch (e: Exception) {
-            val reason = e.message ?: "Backend unreachable; displaying clean offline workspace."
-            DemoFallbackDataset.buildSafeDemoSnapshot(
-                reason = reason,
+            val reason = e.message ?: "Live backend unreachable."
+            throw BackendApiException(
+                message = reason,
                 diagnostic = ApiDiagnosticInfo(
                     endpointUrl = endpointUrl,
                     httpStatusCode = 0,
                     contentType = "none",
                     errorSummary = reason,
-                    remediationHint = "Deploy the backend to a public Cloud Run URL and configure it in Settings."
-                ),
-                companyName = sessionVault.companyName,
-                userName = sessionVault.userDisplayName
+                    remediationHint = "Verify internet connectivity and ensure $baseUrl is online."
+                )
             )
         }
     }

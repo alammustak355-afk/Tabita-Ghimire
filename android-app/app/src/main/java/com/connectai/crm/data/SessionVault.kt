@@ -29,7 +29,7 @@ class SessionVault(context: Context) {
     }
 
     var bearerToken: String
-        get() = prefs.getString(KEY_BEARER_TOKEN, "demo-session-token") ?: "demo-session-token"
+        get() = prefs.getString(KEY_BEARER_TOKEN, "connectai-live-session") ?: "connectai-live-session"
         set(value) = prefs.edit().putString(KEY_BEARER_TOKEN, value.trim()).apply()
 
     var activeTenantSlug: String
@@ -64,6 +64,10 @@ class SessionVault(context: Context) {
         get() = prefs.getString(KEY_USER_DISPLAY_NAME, "Workspace Owner") ?: "Workspace Owner"
         set(value) = prefs.edit().putString(KEY_USER_DISPLAY_NAME, value.trim().ifBlank { "Workspace Owner" }).apply()
 
+    var userEmail: String
+        get() = prefs.getString(KEY_USER_EMAIL, "alammustak355@gmail.com") ?: "alammustak355@gmail.com"
+        set(value) = prefs.edit().putString(KEY_USER_EMAIL, value.trim().ifBlank { "alammustak355@gmail.com" }).apply()
+
     var workspaceIndustry: String
         get() = prefs.getString(KEY_WORKSPACE_INDUSTRY, "Recruitment & Omnichannel CRM") ?: "Recruitment & Omnichannel CRM"
         set(value) = prefs.edit().putString(KEY_WORKSPACE_INDUSTRY, value.trim()).apply()
@@ -73,7 +77,7 @@ class SessionVault(context: Context) {
         set(value) = prefs.edit().putString(KEY_WORKSPACE_TIMEZONE, value.trim()).apply()
 
     fun signInWithToken(token: String, tenantSlug: String = "") {
-        bearerToken = token.ifBlank { "demo-session-token" }
+        bearerToken = token.ifBlank { "connectai-live-session" }
         if (tenantSlug.isNotBlank()) {
             activeTenantSlug = tenantSlug
         }
@@ -88,13 +92,14 @@ class SessionVault(context: Context) {
     }
 
     companion object {
-        private const val KEY_BEARER_TOKEN = "auth_bearer_token"
-        private const val KEY_TENANT_SLUG = "active_tenant_slug"
-        private const val KEY_BACKEND_URL = "backend_base_url"
+        private const val KEY_BEARER_TOKEN = "auth_bearer_token_v3"
+        private const val KEY_TENANT_SLUG = "active_tenant_slug_v3"
+        private const val KEY_BACKEND_URL = "live_backend_base_url_v3"
         private const val KEY_SIGNED_OUT = "is_signed_out"
-        private const val KEY_ONBOARDING_COMPLETED = "onboarding_completed_v2"
+        private const val KEY_ONBOARDING_COMPLETED = "onboarding_completed_v3"
         private const val KEY_COMPANY_NAME = "workspace_company_name"
         private const val KEY_USER_DISPLAY_NAME = "user_display_name"
+        private const val KEY_USER_EMAIL = "user_email_address"
         private const val KEY_WORKSPACE_INDUSTRY = "workspace_industry"
         private const val KEY_WORKSPACE_TIMEZONE = "workspace_timezone"
 

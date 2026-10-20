@@ -60,11 +60,8 @@ fun ConnectAiCrmAppRoot(
     var activeDest by remember { mutableStateOf(NavDestination.OVERVIEW) }
     var isLoading by remember { mutableStateOf(true) }
     var isSignedOut by remember { mutableStateOf(sessionVault.isSignedOut) }
-    var snapshot by remember {
-        mutableStateOf(
-            DemoFallbackDataset.buildSafeDemoSnapshot("Connecting to ConnectAI CRM backend...")
-        )
-    }
+    var liveSnapshot by remember { mutableStateOf<CrmWorkspaceSnapshot?>(null) }
+    var apiError by remember { mutableStateOf<ApiDiagnosticInfo?>(null) }
 
     var copilotResult by remember { mutableStateOf<AiCopilotResult?>(null) }
     var isRunningCopilot by remember { mutableStateOf(false) }
@@ -78,23 +75,38 @@ fun ConnectAiCrmAppRoot(
             if (showUserFeedback) {
                 retryAttemptCount += 1
             }
-            val updated = apiClient.fetchBootstrapWorkspace()
-            snapshot = updated
-            isLoading = false
-            if (showUserFeedback) {
-                if (updated.isLiveBackend) {
+            try {
+                val updated = apiClient.fetchBootstrapWorkspace()
+                liveSnapshot = updated
+                apiError = null
+                isLoading = false
+                if (showUserFeedback) {
                     snackbarHostState.showSnackbar(
                         message = "Connected to Live API (${updated.activeTenant.name}) — HTTP 200 application/json",
                         duration = SnackbarDuration.Short
                     )
-                } else {
-                    val diag = updated.apiDiagnostic
+                }
+            } catch (e: com.connectai.crm.network.BackendApiException) {
+                apiError = e.diagnostic
+                isLoading = false
+                if (showUserFeedback) {
+                    val diag = e.diagnostic
                     val statusLabel = if (diag.httpStatusCode > 0) "HTTP ${diag.httpStatusCode}" else "Network Error"
                     snackbarHostState.showSnackbar(
                         message = "Retry #$retryAttemptCount failed ($statusLabel · ${diag.contentType.ifBlank { "no content-type" }}): ${diag.errorSummary}",
                         duration = SnackbarDuration.Long
                     )
                 }
+            } catch (e: Exception) {
+                val errMsg = e.message ?: "Unable to reach ConnectAI CRM backend."
+                apiError = ApiDiagnosticInfo(
+                    endpointUrl = "${sessionVault.backendBaseUrl}/api/bootstrap",
+                    httpStatusCode = 0,
+                    contentType = "none",
+                    errorSummary = errMsg,
+                    remediationHint = "Check internet connectivity and verify your HTTPS backend URL."
+                )
+                isLoading = false
             }
         }
     }
@@ -116,6 +128,158 @@ fun ConnectAiCrmAppRoot(
         )
         return
     }
+
+    val currentSnapshot = liveSnapshot
+    if (currentSnapshot == null) {
+        Scaffold(
+            snackbarHost = { SnackbarHost(snackbarHostState) },
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text(
+                                text = "ConnectAI CRM",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            Text(
+                                text = if (isLoading) "CONNECTING TO LIVE BACKEND..." else "LIVE API CONNECTION ERROR",
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = if (isLoading) Color(0xFF818CF8) else Color(0xFFFBBF24)
+                            )
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { refreshWorkspace(showUserFeedback = true) }) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Retry Live API", tint = Color.White)
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Navy900)
+                )
+            }
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Slate50)
+                    .padding(innerPadding)
+                    .padding(20.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                if (isLoading) {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = Color.White,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            CircularProgressIndicator(color = Indigo600)
+                            Text(
+                                text = "Connecting to Live ConnectAI CRM Backend...",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Navy900
+                            )
+                            Text(
+                                text = "GET ${sessionVault.backendBaseUrl}/api/bootstrap",
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = Color(0xFF475569)
+                            )
+                        }
+                    }
+                } else {
+                    val diag = apiError ?: ApiDiagnosticInfo(
+                        endpointUrl = "${sessionVault.backendBaseUrl}/api/bootstrap",
+                        errorSummary = "Live backend connection failed."
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = Color.White,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                text = "Live Backend Connection Required",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Rose600
+                            )
+                            Text(
+                                text = diag.errorSummary,
+                                fontSize = 13.sp,
+                                color = Navy900
+                            )
+                            Text(
+                                text = "Endpoint: ${diag.endpointUrl.ifBlank { "${sessionVault.backendBaseUrl}/api/bootstrap" }}",
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = Color(0xFF334155)
+                            )
+                            Text(
+                                text = "HTTP Status: ${if (diag.httpStatusCode > 0) diag.httpStatusCode else "Network Error"} · Content-Type: ${diag.contentType.ifBlank { "none" }}",
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = Color(0xFF475569)
+                            )
+                            if (diag.remediationHint.isNotBlank()) {
+                                Text(
+                                    text = diag.remediationHint,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF92400E)
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Button(
+                                    onClick = { refreshWorkspace(showUserFeedback = true) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Indigo600),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Retry Live API", fontSize = 12.sp)
+                                }
+                                OutlinedButton(
+                                    onClick = { showBackendConfigDialog = true },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("Configure URL", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (showBackendConfigDialog) {
+            BackendDiagnosticAndUrlDialog(
+                currentBackendUrl = sessionVault.backendBaseUrl,
+                diagnostic = apiError ?: ApiDiagnosticInfo(endpointUrl = "${sessionVault.backendBaseUrl}/api/bootstrap"),
+                isLiveBackend = false,
+                onTestUrl = { testUrl -> apiClient.testBackendConnectivity(testUrl) },
+                onDismiss = { showBackendConfigDialog = false },
+                onSaveAndRetry = { newUrl ->
+                    sessionVault.backendBaseUrl = newUrl
+                    showBackendConfigDialog = false
+                    refreshWorkspace(showUserFeedback = true)
+                }
+            )
+        }
+        return
+    }
+
+    val snapshot = currentSnapshot
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -188,14 +352,10 @@ fun ConnectAiCrmAppRoot(
                                     color = Color.White
                                 )
                                 Text(
-                                    text = if (snapshot.isLiveBackend) {
-                                        "LIVE CLOUD SQL · ${snapshot.activeTenant.name}"
-                                    } else {
-                                        "OFFLINE — LIVE API DISCONNECTED"
-                                    },
+                                    text = "LIVE CLOUD SQL · ${snapshot.activeTenant.name}",
                                     fontSize = 10.sp,
                                     fontFamily = FontFamily.Monospace,
-                                    color = if (snapshot.isLiveBackend) Color(0xFF34D399) else Color(0xFFFBBF24)
+                                    color = Color(0xFF34D399)
                                 )
                             }
                         },
@@ -206,7 +366,7 @@ fun ConnectAiCrmAppRoot(
                         },
                         actions = {
                             IconButton(onClick = { refreshWorkspace(showUserFeedback = true) }) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Retry Live API", tint = Color.White)
+                                Icon(Icons.Default.Refresh, contentDescription = "Refresh Live API", tint = Color.White)
                             }
                             IconButton(onClick = { showNewLeadDialog = true }) {
                                 Icon(Icons.Default.Add, contentDescription = "Add Lead", tint = Color.White)
@@ -221,7 +381,8 @@ fun ConnectAiCrmAppRoot(
                             trackColor = Navy800
                         )
                     }
-                    if (!snapshot.isLiveBackend) {
+                    val activeErr = apiError
+                    if (activeErr != null) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -230,18 +391,11 @@ fun ConnectAiCrmAppRoot(
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text(
-                                text = snapshot.connectionBanner,
+                                text = "SYNC WARNING — ${activeErr.errorSummary}",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = Color(0xFF92400E)
                             )
-                            if (snapshot.apiDiagnostic.remediationHint.isNotBlank()) {
-                                Text(
-                                    text = snapshot.apiDiagnostic.remediationHint,
-                                    fontSize = 10.sp,
-                                    color = Color(0xFF78350F)
-                                )
-                            }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.End,

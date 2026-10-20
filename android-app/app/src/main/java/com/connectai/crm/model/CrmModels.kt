@@ -220,7 +220,7 @@ data class ApiDiagnosticInfo(
 
 
 data class CrmWorkspaceSnapshot(
-    val isLiveBackend: Boolean,
+    val isLiveBackend: Boolean = true,
     val connectionBanner: String,
     val apiDiagnostic: ApiDiagnosticInfo = ApiDiagnosticInfo(),
     val user: UserProfile,
@@ -239,72 +239,4 @@ data class CrmWorkspaceSnapshot(
     val invitations: List<InvitationRecord>,
     val auditLogs: List<AuditLogRecord>
 )
-
-object DemoFallbackDataset {
-    fun buildSafeDemoSnapshot(
-        reason: String,
-        diagnostic: ApiDiagnosticInfo = ApiDiagnosticInfo(errorSummary = reason),
-        companyName: String = "ConnectAI CRM Workspace",
-        userName: String = "Workspace Owner"
-    ): CrmWorkspaceSnapshot {
-        val tenant = TenantWorkspace(
-            id = 1,
-            name = companyName.ifBlank { "ConnectAI CRM Workspace" },
-            slug = "clean-workspace",
-            industry = "Recruitment & Omnichannel CRM",
-            timezone = "UTC",
-            plan = "Starter Workspace",
-            emergencyPause = false,
-            aiDisclosureEnabled = true,
-            retentionDays = 365
-        )
-        return CrmWorkspaceSnapshot(
-            isLiveBackend = false,
-            connectionBanner = "LIVE API DISCONNECTED — $reason",
-            apiDiagnostic = diagnostic,
-            user = UserProfile(
-                id = 1,
-                uid = "local-owner-uid-01",
-                email = "owner@connectai-crm.io",
-                name = userName.ifBlank { "Workspace Owner" },
-                role = "company_owner"
-            ),
-            activeTenant = tenant,
-            authorizedTenants = listOf(tenant),
-            contacts = emptyList(),
-            leads = emptyList(),
-            conversations = emptyList(),
-            messages = emptyList(),
-            channels = emptyList(),
-            campaigns = emptyList(),
-            tasks = emptyList(),
-            appointments = emptyList(),
-            aiAgents = emptyList(),
-            integrations = listOf(
-                IntegrationRecord(
-                    id = 1001,
-                    providerKey = "meta_whatsapp_cloud",
-                    displayName = "Meta WhatsApp Business Cloud API",
-                    category = "messaging",
-                    status = "not_configured",
-                    maskedCredentialHint = "Not Configured — Connect WABA Token & Phone Number ID",
-                    requiredPermissions = "whatsapp_business_messaging, whatsapp_business_management",
-                    setupInstructions = "Configure your public Cloud Run backend URL and Meta WhatsApp Access Token when ready."
-                ),
-                IntegrationRecord(
-                    id = 1002,
-                    providerKey = "google_gemini_ai",
-                    displayName = "Google Gemini AI (Server-Side Grounded Copilot)",
-                    category = "ai",
-                    status = "requires_live_backend",
-                    maskedCredentialHint = "Server-Side GEMINI_API_KEY",
-                    requiredPermissions = "Server-side proxy only (Zero client key exposure)",
-                    setupInstructions = "Deploy Express backend to public Cloud Run to enable live /api/ai/copilot calls."
-                )
-            ),
-            invitations = emptyList(),
-            auditLogs = emptyList()
-        )
-    }
-}
 
