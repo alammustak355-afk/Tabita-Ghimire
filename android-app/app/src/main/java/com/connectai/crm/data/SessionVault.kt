@@ -9,13 +9,24 @@ import com.connectai.crm.BuildConfig
 @Suppress("DEPRECATION")
 class SessionVault(context: Context) {
 
-    private val prefs: SharedPreferences = EncryptedSharedPreferences.create(
-        "connectai_crm_encrypted_vault",
-        MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC),
-        context.applicationContext,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
+    private val prefs: SharedPreferences = runCatching {
+        EncryptedSharedPreferences.create(
+            "connectai_crm_encrypted_vault",
+            MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC),
+            context.applicationContext,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    }.getOrElse {
+        // Recover gracefully if OEM Keystore / backup restore invalidates master key
+        runCatching {
+            context.applicationContext.deleteSharedPreferences("connectai_crm_encrypted_vault")
+        }
+        context.applicationContext.getSharedPreferences(
+            "connectai_crm_fallback_vault",
+            Context.MODE_PRIVATE
+        )
+    }
 
     var bearerToken: String
         get() = prefs.getString(KEY_BEARER_TOKEN, "demo-session-token") ?: "demo-session-token"

@@ -44,147 +44,149 @@ class ConnectAiApiClient(private val sessionVault: SessionVault) {
         }
     }
 
-    private fun extractHtmlTitle(rawHtml: String): String {
-        val match = Regex("<title>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
-            .find(rawHtml)
-        return match?.groupValues?.getOrNull(1)?.trim().orEmpty()
-    }
+    companion object {
+        internal fun extractHtmlTitle(rawHtml: String): String {
+            val match = Regex("<title>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+                .find(rawHtml)
+            return match?.groupValues?.getOrNull(1)?.trim().orEmpty()
+        }
 
-    private fun parseSafeJsonResponse(
-        rawText: String,
-        contentType: String,
-        httpCode: Int,
-        fullUrl: String,
-        requireBootstrapSchema: Boolean
-    ): JSONObject {
-        val trimmed = rawText.trim()
-        val lowerContentType = contentType.lowercase()
+        internal fun parseSafeJsonResponse(
+            rawText: String,
+            contentType: String,
+            httpCode: Int,
+            fullUrl: String,
+            requireBootstrapSchema: Boolean
+        ): JSONObject {
+            val trimmed = rawText.trim()
+            val lowerContentType = contentType.lowercase()
 
-        // 1. Handle Empty Responses safely
-        if (trimmed.isEmpty()) {
-            if (requireBootstrapSchema) {
-                val msg = "Empty response body (HTTP $httpCode, Content-Type: ${contentType.ifBlank { "none" }}) from $fullUrl."
+            // 1. Handle Empty Responses safely
+            if (trimmed.isEmpty()) {
+                if (requireBootstrapSchema) {
+                    val msg = "Empty response body (HTTP $httpCode, Content-Type: ${contentType.ifBlank { "none" }}) from $fullUrl."
+                    throw BackendApiException(
+                        message = msg,
+                        diagnostic = ApiDiagnosticInfo(
+                            endpointUrl = fullUrl,
+                            httpStatusCode = httpCode,
+                            contentType = contentType.ifBlank { "empty" },
+                            errorSummary = msg,
+                            remediationHint = "Verify that the backend server is running and returning JSON on /api/bootstrap."
+                        )
+                    )
+                }
+                return JSONObject()
+            }
+
+            // 2. Detect HTML responses (e.g. <!doctype html>, <html>, /__cookie_check.html) BEFORE JSONTokener
+            if (lowerContentType.contains("text/html") || trimmed.startsWith("<")) {
+                val htmlTitle = extractHtmlTitle(trimmed)
+                val isAiStudioPreviewGate = fullUrl.contains("ais-pre-") ||
+                    fullUrl.contains("ais-dev-") ||
+                    trimmed.contains("__cookie_check") ||
+                    trimmed.contains("applet-auth-bridge") ||
+                    htmlTitle.contains("Cookie check", ignoreCase = true)
+
+                val summary = if (isAiStudioPreviewGate) {
+                    "AI Studio preview proxy ($fullUrl) returned an HTML browser cookie check (HTTP $httpCode, Content-Type: text/html${if (htmlTitle.isNotBlank()) ", Title: \"$htmlTitle\"" else ""}) instead of JSON."
+                } else {
+                    "Endpoint returned HTML (${htmlTitle.ifBlank { "text/html" }}, HTTP $httpCode) instead of application/json."
+                }
+                val hint = if (isAiStudioPreviewGate) {
+                    "The URL 'ais-pre-...run.app' is an internal AI Studio web preview proxy that requires browser cookies (__cookie_check.html). To connect the native Android app to live data, deploy this backend to a public Cloud Run service in AI Studio (Deploy -> Cloud Run) and paste that public Cloud Run URL in Settings."
+                } else {
+                    "Verify that the configured Backend URL points to your deployed ConnectAI Express server and not a static HTML page."
+                }
+                throw BackendApiException(
+                    message = "$summary $hint",
+                    diagnostic = ApiDiagnosticInfo(
+                        endpointUrl = fullUrl,
+                        httpStatusCode = httpCode,
+                        contentType = contentType.ifBlank { "text/html" },
+                        errorSummary = summary,
+                        remediationHint = hint
+                    )
+                )
+            }
+
+            // 3. Safely parse JSON Object, JSON Array, JSON String, or Plain Text using JSONTokener
+            val parsedValue = try {
+                org.json.JSONTokener(trimmed).nextValue()
+            } catch (e: Exception) {
+                val preview = trimmed.take(120).replace("\n", " ")
+                val msg = "Invalid JSON response (HTTP $httpCode, Content-Type: ${contentType.ifBlank { "unknown" }}): \"$preview\""
                 throw BackendApiException(
                     message = msg,
                     diagnostic = ApiDiagnosticInfo(
                         endpointUrl = fullUrl,
                         httpStatusCode = httpCode,
-                        contentType = contentType.ifBlank { "empty" },
+                        contentType = contentType.ifBlank { "text/plain" },
                         errorSummary = msg,
-                        remediationHint = "Verify that the backend server is running and returning JSON on /api/bootstrap."
+                        remediationHint = "Ensure the endpoint returns valid application/json."
                     )
                 )
             }
-            return JSONObject()
-        }
 
-        // 2. Detect HTML responses (e.g. <!doctype html>, <html>, /__cookie_check.html) BEFORE JSONTokener
-        if (lowerContentType.contains("text/html") || trimmed.startsWith("<")) {
-            val htmlTitle = extractHtmlTitle(trimmed)
-            val isAiStudioPreviewGate = fullUrl.contains("ais-pre-") ||
-                fullUrl.contains("ais-dev-") ||
-                trimmed.contains("__cookie_check") ||
-                trimmed.contains("applet-auth-bridge") ||
-                htmlTitle.contains("Cookie check", ignoreCase = true)
-
-            val summary = if (isAiStudioPreviewGate) {
-                "AI Studio preview proxy ($fullUrl) returned an HTML browser cookie check (HTTP $httpCode, Content-Type: text/html${if (htmlTitle.isNotBlank()) ", Title: \"$htmlTitle\"" else ""}) instead of JSON."
-            } else {
-                "Endpoint returned HTML (${htmlTitle.ifBlank { "text/html" }}, HTTP $httpCode) instead of application/json."
-            }
-            val hint = if (isAiStudioPreviewGate) {
-                "The URL 'ais-pre-...run.app' is an internal AI Studio web preview proxy that requires browser cookies (__cookie_check.html). To connect the native Android app to live data, deploy this backend to a public Cloud Run service in AI Studio (Deploy -> Cloud Run) and paste that public Cloud Run URL in Settings."
-            } else {
-                "Verify that the configured Backend URL points to your deployed ConnectAI Express server and not a static HTML page."
-            }
-            throw BackendApiException(
-                message = "$summary $hint",
-                diagnostic = ApiDiagnosticInfo(
-                    endpointUrl = fullUrl,
-                    httpStatusCode = httpCode,
-                    contentType = contentType.ifBlank { "text/html" },
-                    errorSummary = summary,
-                    remediationHint = hint
-                )
-            )
-        }
-
-        // 3. Safely parse JSON Object, JSON Array, JSON String, or Plain Text using JSONTokener
-        val parsedValue = try {
-            org.json.JSONTokener(trimmed).nextValue()
-        } catch (e: Exception) {
-            val preview = trimmed.take(120).replace("\n", " ")
-            val msg = "Invalid JSON response (HTTP $httpCode, Content-Type: ${contentType.ifBlank { "unknown" }}): \"$preview\""
-            throw BackendApiException(
-                message = msg,
-                diagnostic = ApiDiagnosticInfo(
-                    endpointUrl = fullUrl,
-                    httpStatusCode = httpCode,
-                    contentType = contentType.ifBlank { "text/plain" },
-                    errorSummary = msg,
-                    remediationHint = "Ensure the endpoint returns valid application/json."
-                )
-            )
-        }
-
-        return when (parsedValue) {
-            is JSONObject -> parsedValue
-            is JSONArray -> JSONObject().put("items", parsedValue)
-            is String -> {
-                // Handle double-encoded JSON strings ("{\"activeTenant\":...}") or plain-text strings safely
-                val innerTrimmed = parsedValue.trim()
-                if (innerTrimmed.startsWith("{") && innerTrimmed.endsWith("}")) {
-                    runCatching { JSONObject(innerTrimmed) }.getOrElse {
+            return when (parsedValue) {
+                is JSONObject -> parsedValue
+                is JSONArray -> JSONObject().put("items", parsedValue)
+                is String -> {
+                    // Handle double-encoded JSON strings ("{\"activeTenant\":...}") or plain-text strings safely
+                    val innerTrimmed = parsedValue.trim()
+                    if (innerTrimmed.startsWith("{") && innerTrimmed.endsWith("}")) {
+                        runCatching { JSONObject(innerTrimmed) }.getOrElse {
+                            if (requireBootstrapSchema) {
+                                throw BackendApiException(
+                                    message = "Malformed JSON string payload from $fullUrl (HTTP $httpCode).",
+                                    diagnostic = ApiDiagnosticInfo(
+                                        endpointUrl = fullUrl,
+                                        httpStatusCode = httpCode,
+                                        contentType = contentType,
+                                        errorSummary = "Server returned a String that could not be parsed as a JSONObject.",
+                                        remediationHint = "Check the backend response format at $fullUrl."
+                                    )
+                                )
+                            }
+                            JSONObject().put("message", parsedValue)
+                        }
+                    } else if (innerTrimmed.startsWith("[") && innerTrimmed.endsWith("]")) {
+                        runCatching { JSONObject().put("items", JSONArray(innerTrimmed)) }.getOrElse {
+                            JSONObject().put("message", parsedValue)
+                        }
+                    } else {
                         if (requireBootstrapSchema) {
+                            val preview = parsedValue.take(120).replace("\n", " ")
+                            val msg = "Expected JSON object from $fullUrl, but received string/text (HTTP $httpCode, Content-Type: ${contentType.ifBlank { "text/plain" }}): \"$preview\""
                             throw BackendApiException(
-                                message = "Malformed JSON string payload from $fullUrl (HTTP $httpCode).",
+                                message = msg,
                                 diagnostic = ApiDiagnosticInfo(
                                     endpointUrl = fullUrl,
                                     httpStatusCode = httpCode,
-                                    contentType = contentType,
-                                    errorSummary = "Server returned a String that could not be parsed as a JSONObject.",
-                                    remediationHint = "Check the backend response format at $fullUrl."
+                                    contentType = contentType.ifBlank { "text/plain" },
+                                    errorSummary = msg,
+                                    remediationHint = "Configure a public Cloud Run backend URL that serves /api/bootstrap as application/json."
                                 )
                             )
                         }
-                        JSONObject().put("message", parsedValue)
+                        JSONObject().put("message", parsedValue).put("value", parsedValue)
                     }
-                } else if (innerTrimmed.startsWith("[") && innerTrimmed.endsWith("]")) {
-                    runCatching { JSONObject().put("items", JSONArray(innerTrimmed)) }.getOrElse {
-                        JSONObject().put("message", parsedValue)
-                    }
-                } else {
+                }
+                else -> {
                     if (requireBootstrapSchema) {
-                        val preview = parsedValue.take(120).replace("\n", " ")
-                        val msg = "Expected JSON object from $fullUrl, but received string/text (HTTP $httpCode, Content-Type: ${contentType.ifBlank { "text/plain" }}): \"$preview\""
                         throw BackendApiException(
-                            message = msg,
+                            message = "Unexpected JSON primitive (${parsedValue?.javaClass?.simpleName}) from $fullUrl.",
                             diagnostic = ApiDiagnosticInfo(
                                 endpointUrl = fullUrl,
                                 httpStatusCode = httpCode,
-                                contentType = contentType.ifBlank { "text/plain" },
-                                errorSummary = msg,
-                                remediationHint = "Configure a public Cloud Run backend URL that serves /api/bootstrap as application/json."
+                                contentType = contentType,
+                                errorSummary = "Expected JSON object from /api/bootstrap.",
+                                remediationHint = "Verify the backend URL points to the ConnectAI CRM server."
                             )
                         )
                     }
-                    JSONObject().put("message", parsedValue).put("value", parsedValue)
+                    JSONObject().put("value", parsedValue)
                 }
-            }
-            else -> {
-                if (requireBootstrapSchema) {
-                    throw BackendApiException(
-                        message = "Unexpected JSON primitive (${parsedValue?.javaClass?.simpleName}) from $fullUrl.",
-                        diagnostic = ApiDiagnosticInfo(
-                            endpointUrl = fullUrl,
-                            httpStatusCode = httpCode,
-                            contentType = contentType,
-                            errorSummary = "Expected JSON object from /api/bootstrap.",
-                            remediationHint = "Verify the backend URL points to the ConnectAI CRM server."
-                        )
-                    )
-                }
-                JSONObject().put("value", parsedValue)
             }
         }
     }

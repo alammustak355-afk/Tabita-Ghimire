@@ -391,16 +391,16 @@ app.post('/api/workspace/reset', requireAuth, async (req: AuthRequest, res) => {
 });
 
 // Direct Download Endpoints for ConnectAI CRM User Guide Book (Markdown & PDF)
-app.get(['/api/guide/download-md', '/ConnectAI-CRM-User-Guide.md'], (_req, res) => {
+app.get(['/api/guide/download-md', '/ConnectAI_CRM_User_Guide.md', '/ConnectAI-CRM-User-Guide.md'], (_req, res) => {
   try {
-    const mdPath = path.join(process.cwd(), 'USER_GUIDE.md');
+    const mdPath = path.join(process.cwd(), 'ConnectAI_CRM_User_Guide.md');
     if (!fs.existsSync(mdPath)) {
-      return res.status(404).json({ error: 'User Guide Markdown file not found' });
+      return res.status(404).json({ error: 'ConnectAI_CRM_User_Guide.md not found' });
     }
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
     res.setHeader(
       'Content-Disposition',
-      'attachment; filename="ConnectAI-CRM-User-Guide.md"'
+      'attachment; filename="ConnectAI_CRM_User_Guide.md"'
     );
     res.sendFile(mdPath);
   } catch (error: any) {
@@ -408,16 +408,16 @@ app.get(['/api/guide/download-md', '/ConnectAI-CRM-User-Guide.md'], (_req, res) 
   }
 });
 
-app.get(['/api/guide/download-pdf', '/ConnectAI-CRM-User-Guide.pdf'], (_req, res) => {
+app.get(['/api/guide/download-pdf', '/ConnectAI_CRM_User_Guide.pdf', '/ConnectAI-CRM-User-Guide.pdf'], (_req, res) => {
   try {
-    const pdfPath = path.join(process.cwd(), 'public', 'ConnectAI-CRM-User-Guide.pdf');
+    const pdfPath = path.join(process.cwd(), 'ConnectAI_CRM_User_Guide.pdf');
     if (!fs.existsSync(pdfPath)) {
-      return res.status(404).json({ error: 'User Guide PDF file not found' });
+      return res.status(404).json({ error: 'ConnectAI_CRM_User_Guide.pdf not found' });
     }
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(
       'Content-Disposition',
-      'attachment; filename="ConnectAI-CRM-User-Guide.pdf"'
+      'attachment; filename="ConnectAI_CRM_User_Guide.pdf"'
     );
     res.sendFile(pdfPath);
   } catch (error: any) {
@@ -3214,6 +3214,7 @@ const ANDROID_PROJECT_FILE_PATHS = [
   'android-app/app/src/main/java/com/connectai/crm/ui/theme/Theme.kt',
   'android-app/app/src/main/java/com/connectai/crm/ui/screens/CoreCrmScreens.kt',
   'android-app/app/src/main/java/com/connectai/crm/ui/screens/OperationsAndAdminScreens.kt',
+  'ConnectAI_CRM_User_Guide.md',
 ];
 
 // Direct Download Endpoint for the Complete Android Project ZIP Archive
@@ -3281,6 +3282,7 @@ app.post('/api/android/github-push', requireAuth, async (req: AuthRequest, res) 
 
     const allGitHubPaths = [
       ...ANDROID_PROJECT_FILE_PATHS,
+      'ConnectAI_CRM_User_Guide.pdf',
       'android-app/gradle/wrapper/gradle-wrapper.jar',
     ];
 
@@ -3376,7 +3378,7 @@ async function startServer() {
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);

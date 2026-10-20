@@ -14,10 +14,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
+          cache: 'gradle'
 
       - name: Accept Android SDK Licenses & Install API 35 SDK
         run: |
@@ -40,13 +41,13 @@ jobs:
             echo "No ANDROID_KEYSTORE_BASE64 secret configured; building unsigned release AAB."
           fi
 
-      - name: Build Debug APK for Direct Phone Testing
+      - name: Run Unit Tests & Build Debug APK for Direct Phone Testing
         run: |
           if [ -f "android-app/gradlew" ]; then
             cd android-app
           fi
           chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew testDebugUnitTest assembleDebug --stacktrace
 
       - name: Build Release Android App Bundle (.aab) for Google Play Console
         env:

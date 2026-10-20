@@ -842,3 +842,126 @@ fun SettingsSecurityScreen(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 13. HELP & USER GUIDE SCREEN (In-App Operating Handbook & Troubleshooting)
+// ---------------------------------------------------------------------------
+@Composable
+fun HelpUserGuideScreen(
+    snapshot: CrmWorkspaceSnapshot,
+    backendUrl: String,
+    onOpenBackendConfig: () -> Unit,
+    onNavigate: (NavDestination) -> Unit
+) {
+    val chapters = remember {
+        listOf(
+            Triple(
+                "1. Getting Started & Fresh Workspace Policy",
+                "Zero Fake Data Guarantee",
+                "ConnectAI CRM starts 100% clean with 0 leads, 0 contacts, 0 conversations, and $0 pipeline value. No sample or fabricated business records are ever inserted into your workspace. All dashboard KPIs are calculated strictly from real records you create or receive."
+            ),
+            Triple(
+                "2. Connecting Your Live Cloud Run Backend URL",
+                "Fixing Offline Mode & HTML Redirects",
+                "Google AI Studio preview links (ais-pre-...run.app) require browser cookies (__cookie_check.html) and redirect mobile apps. To connect live PostgreSQL data:\n• In AI Studio, tap Deploy / Publish -> Cloud Run.\n• Copy your public https://...run.app service URL.\n• Tap 'Configure Backend URL' below, paste the URL, tap 'Test URL', and tap 'Save & Retry Live API'."
+            ),
+            Triple(
+                "3. Managing Leads, Contacts & Duplicates",
+                "Lead Center & 11-Stage Recruitment Pipeline",
+                "• Tap '+' in the top bar or open Recruitment Pipeline to add candidates with nationality, job role, destination country, and placement value.\n• Tap any stage chip on a candidate card to move them across the 11 recruitment stages (New Lead -> Contacted -> Interested -> Documents Pending -> Qualified -> Employer Review -> Offer -> Visa Process -> Deployed).\n• Open Lead Center to add contacts and merge duplicate phone/email records with one tap."
+            ),
+            Triple(
+                "4. Unified Inbox, WhatsApp & AI Copilot",
+                "Omnichannel Messaging & 12-Step Webhook Simulator",
+                "• Open Unified Inbox to reply to customer messages, toggle yellow Internal Notes, or tap 'AI Draft Reply' for grounded Gemini responses.\n• Open WhatsApp & Channels to register official WABA lines or test end-to-end automated lead qualification using the 12-Step Inbound Webhook Simulator.\n• Open AI Copilot for candidate qualification scoring, executive briefings, and bottleneck audits."
+            ),
+            Triple(
+                "5. Tasks, Interviews, RBAC & Data Privacy",
+                "Governance, Security & Emergency AI Pause",
+                "• Use Follow-up Tasks to schedule reminders and candidate interviews.\n• Use Team & Performance to invite staff and manage 5 RBAC roles (company_owner, manager, analyst, agent, viewer).\n• Use Settings & Security to switch isolated tenant workspaces, inspect immutable audit logs, or flip the Emergency AI Automation Pause switch."
+            ),
+            Triple(
+                "6. Downloading the Full PDF & Markdown User Guide",
+                "ConnectAI_CRM_User_Guide.pdf & .md",
+                "The complete 16-chapter ConnectAI CRM User Guide & Operating Handbook is stored in your project root directory as ConnectAI_CRM_User_Guide.pdf and ConnectAI_CRM_User_Guide.md, and is also downloadable directly from your web dashboard and backend at /ConnectAI_CRM_User_Guide.pdf and /ConnectAI_CRM_User_Guide.md."
+            )
+        )
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            ExecutiveHeroBanner(
+                eyebrow = "CONNECTAI CRM · OPERATING HANDBOOK",
+                title = "Help & Complete User Guide",
+                subtitle = "Step-by-step instructions for workspace setup, live Cloud Run API connection, international recruitment pipeline, omnichannel inbox, and troubleshooting.",
+                primaryActionText = "Configure Backend URL",
+                onPrimaryAction = onOpenBackendConfig,
+                secondaryActionText = "Go to Overview",
+                onSecondaryAction = { onNavigate(NavDestination.OVERVIEW) }
+            )
+        }
+
+        item {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = Color.White,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFFE2E8F0), RoundedCornerShape(14.dp))
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Current Connection Diagnostic", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Navy900)
+                        StatusPill(
+                            text = if (snapshot.isLiveBackend) "LIVE BACKEND" else "OFFLINE / NOT CONNECTED",
+                            color = if (snapshot.isLiveBackend) Emerald600 else Amber600
+                        )
+                    }
+                    Text(
+                        text = "Configured URL: $backendUrl",
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = Color(0xFF334155)
+                    )
+                    Text(
+                        text = "PDF Download Path: $backendUrl/ConnectAI_CRM_User_Guide.pdf",
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = Indigo600
+                    )
+                    Text(
+                        text = "Markdown Download Path: $backendUrl/ConnectAI_CRM_User_Guide.md",
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = Indigo600
+                    )
+                }
+            }
+        }
+
+        items(chapters, key = { it.first }) { (title, subtitle, body) ->
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = Color.White,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color(0xFFE2E8F0), RoundedCornerShape(14.dp))
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Navy900)
+                    Text(subtitle, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = Teal600)
+                    Text(body, fontSize = 12.sp, color = Color(0xFF334155), lineHeight = 18.sp)
+                }
+            }
+        }
+    }
+}
+

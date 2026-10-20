@@ -147,7 +147,15 @@ fun ConnectAiCrmAppRoot(
 
                     NavDestination.entries.forEach { dest ->
                         val selected = activeDest == dest
+                        val iconTint = if (selected) Color.White else destinationAccentColor(dest)
                         NavigationDrawerItem(
+                            icon = {
+                                Icon(
+                                    imageVector = destinationIcon(dest),
+                                    contentDescription = dest.label,
+                                    tint = iconTint
+                                )
+                            },
                             label = { Text(dest.label, fontSize = 13.sp) },
                             selected = selected,
                             onClick = {
@@ -540,6 +548,13 @@ fun ConnectAiCrmAppRoot(
                             isSignedOut = true
                         }
                     )
+
+                    NavDestination.HELP_USER_GUIDE -> HelpUserGuideScreen(
+                        snapshot = snapshot,
+                        backendUrl = sessionVault.backendBaseUrl,
+                        onOpenBackendConfig = { showBackendConfigDialog = true },
+                        onNavigate = { activeDest = it }
+                    )
                 }
             }
         }
@@ -550,6 +565,7 @@ fun ConnectAiCrmAppRoot(
             currentBackendUrl = sessionVault.backendBaseUrl,
             diagnostic = snapshot.apiDiagnostic,
             isLiveBackend = snapshot.isLiveBackend,
+            onTestUrl = { testUrl -> apiClient.testBackendConnectivity(testUrl) },
             onDismiss = { showBackendConfigDialog = false },
             onSaveAndRetry = { newUrl ->
                 sessionVault.backendBaseUrl = newUrl
@@ -595,10 +611,14 @@ fun BackendDiagnosticAndUrlDialog(
     currentBackendUrl: String,
     diagnostic: ApiDiagnosticInfo,
     isLiveBackend: Boolean,
+    onTestUrl: suspend (String) -> ApiDiagnosticInfo,
     onDismiss: () -> Unit,
     onSaveAndRetry: (String) -> Unit
 ) {
+    val scope = rememberCoroutineScope()
     var urlInput by remember(currentBackendUrl) { mutableStateOf(currentBackendUrl) }
+    var activeDiag by remember(diagnostic) { mutableStateOf(diagnostic) }
+    var isTesting by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -615,27 +635,27 @@ fun BackendDiagnosticAndUrlDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    text = "Endpoint: ${diagnostic.endpointUrl.ifBlank { "$currentBackendUrl/api/bootstrap" }}",
+                    text = "Endpoint: ${activeDiag.endpointUrl.ifBlank { "$currentBackendUrl/api/bootstrap" }}",
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
                     color = Navy900
                 )
                 Text(
-                    text = "HTTP Status: ${if (diagnostic.httpStatusCode > 0) diagnostic.httpStatusCode else "Unreachable"} · Content-Type: ${diagnostic.contentType.ifBlank { "none" }}",
+                    text = "HTTP Status: ${if (activeDiag.httpStatusCode > 0) activeDiag.httpStatusCode else "Unreachable"} · Content-Type: ${activeDiag.contentType.ifBlank { "none" }}${if (activeDiag.latencyMs > 0) " · ${activeDiag.latencyMs}ms" else ""}",
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
-                    color = if (isLiveBackend) Emerald600 else Rose600
+                    color = if (activeDiag.httpStatusCode == 200 && activeDiag.contentType.contains("json")) Emerald600 else Rose600
                 )
-                if (diagnostic.errorSummary.isNotBlank()) {
+                if (activeDiag.errorSummary.isNotBlank()) {
                     Text(
-                        text = "Result: ${diagnostic.errorSummary}",
+                        text = "Result: ${activeDiag.errorSummary}",
                         fontSize = 12.sp,
                         color = Color(0xFF334155)
                     )
                 }
-                if (diagnostic.remediationHint.isNotBlank()) {
+                if (activeDiag.remediationHint.isNotBlank()) {
                     Text(
-                        text = "How to Fix: ${diagnostic.remediationHint}",
+                        text = "How to Fix: ${activeDiag.remediationHint}",
                         fontSize = 11.sp,
                         color = Color(0xFF92400E)
                     )
@@ -648,6 +668,19 @@ fun BackendDiagnosticAndUrlDialog(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            isTesting = true
+                            activeDiag = onTestUrl(urlInput)
+                            isTesting = false
+                        }
+                    },
+                    enabled = !isTesting,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (isTesting) "Testing /api/bootstrap..." else "Test URL (/api/bootstrap)")
+                }
             }
         },
         confirmButton = {
